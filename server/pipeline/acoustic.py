@@ -17,7 +17,7 @@ SR = 16000
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from research.extract import window_audio  # noqa: E402  (shared with training: parity)
+from research.extract import window_audio, window_bounds  # noqa: E402  (shared with training: parity)
 
 
 @dataclass
@@ -26,6 +26,11 @@ class Embedding:
     v_raw: np.ndarray    # raw-z session vector (for /demo/compare)
     window_count: int
     encoder: str
+    logit: float | None = None   # mean window logit of the disease head (None without trained artifacts)
+    # window level (same 8 s windows the session vector is built from): seconds + one vector per window
+    win_bounds: list[tuple[float, float]] | None = None
+    W: np.ndarray | None = None        # projected / invariant, [n_windows, d]
+    W_raw: np.ndarray | None = None    # raw, [n_windows, d_raw]
 
 
 # ----------------------------------------------------------------------------- spectral fallback
@@ -102,14 +107,21 @@ class _WavLMEncoder:
         self.proj = Projector()
         self.proj.load_state_dict(torch.load(adir / "projector.pt", map_location="cpu", weights_only=True))
         self.proj.eval()
+        self.f_d = None
+        if (adir / "disease_head.pt").exists():
+            self.f_d = torch.nn.Linear(128, 1)
+            self.f_d.load_state_dict(torch.load(adir / "disease_head.pt", map_location="cpu", weights_only=True))
+            self.f_d.eval()
 
-    def embed(self, wins: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    def embed(self, wins: list[np.ndarray]):
+        """Returns per-window (projected [n,128], raw z [n,768]) and the mean window logit."""
         from research.extract import layer_means
 
         z = layer_means(self.model, wins, device=self.dev)[:, self.layer, :]   # fp32 on the GTX 1650
         with self.torch.no_grad():
-            h = self.proj(self.torch.from_numpy(z)).numpy()
-        return h.mean(0), z.mean(0)
+            ht = self.proj(self.torch.from_numpy(z))
+            lg = float(self.f_d(ht).squeeze(-1).mean()) if self.f_d is not None else None   # mean WINDOW logit
+        return ht.numpy(), z, lg
 
 
 class AcousticBranch:
@@ -128,12 +140,57 @@ class AcousticBranch:
                 log.warning("WavLM encoder unavailable (%s) - using spectral fallback", e)
 
     def embed(self, x: np.ndarray, speech_mask: np.ndarray | None) -> Embedding:
-        wins = window_audio(x)
+        bounds = window_bounds(len(x))
+        wins = [x[a:b] for a, b in bounds]
+        secs = [(round(a / SR, 3), round(b / SR, 3)) for a, b in bounds]
         if self._enc is not None and wins:
-            v, raw = self._enc.embed(wins)
-            return Embedding(v, raw, len(wins), self.encoder_name)
-        v, raw = spectral_embeddings(x, speech_mask)
-        return Embedding(v, raw, max(1, len(wins)), self.encoder_name)
+            W, W_raw, lg = self._enc.embed(wins)
+            # session vector = mean of the window vectors (unchanged behaviour)
+            return Embedding(W.mean(0), W_raw.mean(0), len(wins), self.encoder_name, lg, secs, W, W_raw)
+        v, raw = spectral_embeddings(x, speech_mask)      # session vector: whole recording (unchanged)
+        W, W_raw = [], []
+        from .quality import vad_mask
+        for a, b in bounds:                               # window vectors: same recipe on each 8 s window, with a
+            wi, wr = spectral_embeddings(x[a:b], vad_mask(x[a:b]))   # window-LOCAL VAD (independent windows)
+            W.append(wi); W_raw.append(wr)
+        return Embedding(v, raw, max(1, len(wins)), self.encoder_name, None, secs,
+                         np.array(W) if W else None, np.array(W_raw) if W_raw else None)
+
+
+# ----------------------------------------------------------------------------- cohort reference (calibrated)
+class CohortRisk:
+    """Platt-calibrated output of our own disease head, as an Androids-COHORT reference for the clinician.
+    Shown only if calibration.json exists AND its E1 gate passed (session AUC CI above 0.5). Never shown to the
+    patient, never combined with drift, never used to set the status."""
+
+    def __init__(self, adir=None):
+        self.cal = None
+        if adir is None:
+            cands = sorted(resolve(get_config().artifacts["dir"]).glob("v*"),
+                           key=lambda p: int(p.name[1:]) if p.name[1:].isdigit() else -1)
+            adir = cands[-1] if cands else None
+        if adir is not None and (adir / "calibration.json").exists():
+            self.cal = json.loads((adir / "calibration.json").read_text())
+
+    @property
+    def available(self) -> bool:
+        return bool(self.cal and self.cal.get("gate_passed"))
+
+    def score(self, session_logit: float | None) -> dict:
+        base = {"source": "androids-cohort-" + (self.cal or {}).get("model", "M3"),
+                "label": (self.cal or {}).get("label", "Androids-cohort reference")}
+        if self.cal is None or session_logit is None:
+            return {**base, "available": False, "reason": "no trained classifier / calibration yet"}
+        if not self.cal.get("gate_passed"):
+            return {**base, "available": False,
+                    "reason": "hidden: the classifier did not beat chance on held-out Androids speakers (E1 gate)"}
+        p = float(1.0 / (1.0 + np.exp(-(self.cal["a"] * session_logit + self.cal["b"]))))
+        t = self.cal["bands"]
+        level = "elevated" if p >= t["elevated"] else "moderate" if p >= t["moderate"] else "low"
+        m = self.cal["metrics"]
+        return {**base, "available": True, "band": level, "prob": round(p, 3),
+                "calibration": {"method": self.cal.get("method", "platt"), "ece": m["ece"], "brier": m["brier"],
+                                "auc": m["auc"], "auc_ci": m["auc_ci"]}}
 
 
 # ----------------------------------------------------------------------------- DAM reference risk

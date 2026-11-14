@@ -51,7 +51,11 @@ def vad_mask(x: np.ndarray) -> np.ndarray:
     e = 10 * np.log10(np.mean(fr ** 2, axis=1) + 1e-12)
     floor = np.percentile(e, 10)
     peak = np.percentile(e, 95)
-    thr = max(floor + 9.0, min(peak - 25.0, floor + 20.0))
+    # margin above the floor adapts to the dynamic range: 9 dB on clean audio, down to 3 dB when noise
+    # compresses the range (speech at 5-10 dB SNR is only ~4-10 dB above the noise floor). Frames of pure noise
+    # that slip through are caught by the SNR check, which rejects the window/recording.
+    margin = float(np.clip(0.5 * (peak - floor), 3.0, 9.0))
+    thr = max(floor + margin, min(peak - 25.0, floor + 20.0))
     m = e > thr
     # bridge gaps up to 90 ms (hangover): close then drop isolated single-frame blips
     closed = np.convolve(m.astype(float), np.ones(4), mode="same") > 0

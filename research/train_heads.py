@@ -130,7 +130,10 @@ def train_head(d: Data, kind: str, layer: int, train_idx: np.ndarray, val_idx: n
             loss = 0.5 * (F.binary_cross_entropy_with_logits(H.disease(hc), yy)
                           + F.binary_cross_entropy_with_logits(H.disease(hn), yy))
             if kind in ("M2", "M3"):
-                loss = loss + alpha * (hc - hn).pow(2).sum(1).mean()
+                # Consistency as the MEAN over the 128 dims (not the sum): the spec's ||.||^2 summed over a
+                # LayerNorm'd 128-d vector is ~100x the disease CE, so the model only ever minimizes it and
+                # disease learning never starts (early stopping then returns ~untrained weights). See README.
+                loss = loss + alpha * (hc - hn).pow(2).mean(1).mean()
             if kind == "M3":
                 beta = beta_max * min(1.0, step / max(1, BETA_RAMP * n_steps))   # ramp 0 -> beta over first 30%
                 loss = loss + beta * 0.5 * (F.cross_entropy(H.env(hc, 1.0), torch.zeros_like(e))
@@ -152,19 +155,26 @@ def train_head(d: Data, kind: str, layer: int, train_idx: np.ndarray, val_idx: n
     return P, H, best
 
 
-def predict_head(P, H, Z: np.ndarray) -> np.ndarray:
+def predict_head_logit(P, H, Z: np.ndarray) -> np.ndarray:
     with torch.no_grad():
-        return torch.sigmoid(H.disease(P(torch.from_numpy(Z.astype(np.float32))))).numpy()
+        return H.disease(P(torch.from_numpy(Z.astype(np.float32)))).numpy()
+
+
+def predict_head(P, H, Z: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-predict_head_logit(P, H, Z)))
 
 
 # ------------------------------------------------------------------ 5-fold CV driver
 def run_cv(d: Data, models=("L0", "M1", "M3"), seeds=(0, 1, 2), folds=None, epochs=EPOCHS,
-           layers=range(13), device: str = "cpu"):
+           layers=range(13), device: str = "cpu", return_oof: bool = False):
     """Returns dict: results[model][cond] = DataFrame-like list of (fold, speaker, label, score), plus chosen layers.
-    cond in {"clean", 20, 10, 5}."""
+    cond in {"clean", 20, 10, 5}.
+    return_oof=True also returns oof[model] = per-WINDOW out-of-fold logits on clean audio (aligned with d),
+    each produced by the model of the fold that held that window out - the input for Platt calibration."""
     labels = {s: int(d.y[d.spk == s][0]) for s in np.unique(d.spk)}
     folds = folds if folds is not None else sorted(np.unique(d.fold))
     res = {m: {c: [] for c in ["clean", *d.Zt.keys()]} for m in models}
+    oof = {m: np.full(len(d.y), np.nan) for m in models}
     chosen = {}
     for f in folds:
         test_mask = d.fold == f
@@ -186,13 +196,21 @@ def run_cv(d: Data, models=("L0", "M1", "M3"), seeds=(0, 1, 2), folds=None, epoc
 
         if "L0" in models:
             f0 = fit_l0(d.Zc[fit_idx, layer], d.y[fit_idx], C, device)
-            record("L0", {c: f0(Z[:, layer]) for c, Z in conds.items()})
+            p0 = {c: f0(Z[:, layer]) for c, Z in conds.items()}
+            record("L0", p0)
+            pc = np.clip(p0["clean"][test_mask], 1e-6, 1 - 1e-6)
+            oof["L0"][test_mask] = np.log(pc / (1 - pc))
         for kind in [m for m in models if m != "L0"]:
-            ps = {c: [] for c in conds}
+            zs = {c: [] for c in conds}
             for sd in seeds:
                 P, H, _ = train_head(d, kind, layer, tr_idx, va_idx, seed=sd, epochs=epochs, device=device)
                 for c, Z in conds.items():
-                    ps[c].append(predict_head(P, H, Z[:, layer]))
-            record(kind, {c: np.mean(v, 0) for c, v in ps.items()})   # 3 seeds averaged
+                    zs[c].append(predict_head_logit(P, H, Z[:, layer]))
+            zbar = {c: np.mean(v, 0) for c, v in zs.items()}                  # 3 seeds averaged (logit space)
+            record(kind, {c: 1.0 / (1.0 + np.exp(-z)) for c, z in zbar.items()})
+            oof[kind][test_mask] = zbar["clean"][test_mask]
+    if return_oof:
+        assert all(not np.isnan(v).any() for v in oof.values()), "every window must get an out-of-fold logit"
+        return res, chosen, oof
     return res, chosen
 

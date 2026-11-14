@@ -37,23 +37,30 @@ def read_16k(path: str, t0: float | None = None, t1: float | None = None) -> np.
     return x
 
 
+def window_bounds(n_samples: int, sr: int = SR, win_s: float = WIN_S, min_tail_s: float = MIN_TAIL_S,
+                  max_windows: int | None = None) -> list[tuple[int, int]]:
+    """Sample ranges of the 8.0 s non-overlapping windows; a tail shorter than 4 s is dropped."""
+    w = int(win_s * sr)
+    out = []
+    for i in range(0, n_samples, w):
+        e = min(i + w, n_samples)
+        if e - i == w or e - i >= min_tail_s * sr:
+            out.append((i, e))
+    return out[:max_windows] if max_windows else out
+
+
 def window_audio(x: np.ndarray, sr: int = SR, win_s: float = WIN_S, min_tail_s: float = MIN_TAIL_S,
                  max_windows: int | None = None) -> list[np.ndarray]:
     """8.0 s non-overlapping windows; a tail shorter than 4 s is dropped, a longer tail is kept as-is."""
-    w = int(win_s * sr)
-    out = []
-    for i in range(0, len(x), w):
-        seg = x[i:i + w]
-        if len(seg) == w or len(seg) >= min_tail_s * sr:
-            out.append(seg)
-    return out[:max_windows] if max_windows else out
+    return [x[a:b] for a, b in window_bounds(len(x), sr, win_s, min_tail_s, max_windows)]
 
 
 def load_wavlm(name: str = "microsoft/wavlm-base", revision: str = "main", device: str = "cpu"):
     import torch
     from transformers import WavLMModel
 
-    m = WavLMModel.from_pretrained(name, revision=revision).to(device).eval()
+    # safetensors only: avoids also downloading pytorch_model.bin (378 MB twice) and never unpickles weights
+    m = WavLMModel.from_pretrained(name, revision=revision, use_safetensors=True).to(device).eval()
     for p in m.parameters():
         p.requires_grad_(False)
     return m

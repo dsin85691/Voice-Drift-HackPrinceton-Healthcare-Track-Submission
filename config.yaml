@@ -21,6 +21,11 @@ quality:
   warn_snr_db: 18
   warn_clipping: 0.002
 
+windows:                  # per-window quality for the raw-vs-projected visualization
+  reject_speech_s: 3.0    # an 8 s window with < 3 s of speech is not scored (shown as a gap)
+  reject_snr_db: 5        # speech buried in noise: not scored
+  warn_snr_db: 12
+
 drift:
   k: 16
   baseline_n: 5

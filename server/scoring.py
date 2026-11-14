@@ -46,6 +46,9 @@ def apply_scoring(s: Session, ck: Checkin, *, vec: np.ndarray | None, vec_raw: n
         ck.status = "SAFETY"
         ck.drift = None
         ck.reference_risk = None
+        ck.extra.pop("cohort_risk", None)      # no scores of any kind are stored for SAFETY check-ins
+        ck.extra.pop("window_analysis", None)
+        ck.window_vecs = ck.window_vecs_raw = None
         ck.timing = None
         ck.session_vec = ck.session_vec_raw = None
         alerts.append(Alert(id=new_id("a"), patient_id=ck.patient_id, checkin_id=ck.id, kind="SAFETY"))
@@ -55,6 +58,8 @@ def apply_scoring(s: Session, ck: Checkin, *, vec: np.ndarray | None, vec_raw: n
 
     ck.session_vec = vec_to_blob(vec) if verdict != "REJECT" else None
     ck.session_vec_raw = vec_to_blob(vec_raw) if verdict != "REJECT" else None
+    if verdict == "REJECT":
+        ck.window_vecs = ck.window_vecs_raw = None
     bl = s.get(Baseline, ck.patient_id)
     base_n = int(cfg["baseline_n"])
     scored_hist = [(c.drift["exceeds"], c.drift["weight"]) for c in prev if c.drift]
@@ -161,6 +166,8 @@ def result_json(ck: Checkin, patient_id: str | None = None) -> dict:
         return r
     r["drift"] = ck.drift
     r["reference_risk"] = ck.reference_risk
+    r["cohort_risk"] = ex.get("cohort_risk")   # clinician-only; patient_view never includes it
+    r["has_window_analysis"] = bool(ex.get("window_analysis"))
     return r
 
 

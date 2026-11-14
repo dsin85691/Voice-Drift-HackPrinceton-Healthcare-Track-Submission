@@ -31,6 +31,99 @@ The app degrades per component instead of failing (spec section 11). `/api/healt
 **Important:** without ASR the lexicon safety screen has nothing to scan. Install faster-whisper before any
 live use.
 
+## Inside a recording: raw vs projected, window by window
+
+The main demo visualization (`server/pipeline/windows.py`, `#/windows/<checkin>` and the `?demo=1#/lab` Replay
+lab). For each 8 s window of one recording it plots raw-encoder drift and projected (invariance-head) drift, each
+divided by **its own** calibrated window threshold, so one **fixed** line at 1 serves both and never moves.
+
+- **Distance:** cosine distance to the patient's baseline reference, which is the mean of their baseline
+  *window* vectors.
+- **Thresholds:** window-level only, never the session τ.
+  - First choice: calibrated from the patient's own quiet baseline, leave-one-session-out, 90th percentile.
+  - Fallback: population thresholds exported with the artifacts.
+  - Each check-in's analysis is stored when it is computed, so its thresholds are frozen.
+- **Windows are independent.** Voice activity detection runs inside each window, so noise added at 30 s cannot
+  change the score at 5 s. A test enforces this.
+- **Window quality:** a window with less than 3 s of speech, or a local SNR below 5 dB, is a **gap**, never a zero.
+- **States:**
+
+  | State | Meaning | Shown |
+  | --- | --- | --- |
+  | A | Baseline not ready | Progress only |
+  | B | Not calibrated | Separate uncalibrated panels, no threshold |
+  | C | Calibrated | Both normalized curves and the fixed line at 1 |
+  | D | Nothing usable | Rejection reason |
+  | E | Partially valid | Valid windows scored, invalid windows as gaps |
+
+- **Shading** is labelled "Model disagreement": an observation, not proof that noise was removed.
+- **Replay lab (Mode 1):**
+  - The same clean speech is analysed as recorded, and again with a known, seeded noise (babble, speech-shaped,
+    pink, or an uploaded file) over a known interval at a known SNR.
+  - It is analysis only: nothing is stored, and the audio is deleted.
+- **Live mode (Mode 2):** with `?demo=1`, the check-in screen has a "Mark noise start/end" button. The marks are
+  stored with the check-in and drawn on its timeline.
+- **It never changes** the longitudinal (session) drift, the status, or alerts. It is never shown to the patient
+  and is dropped for SAFETY check-ins.
+
+**Expect honest results.** On the **fallback** features (no trained artifacts), the "projected" path is classical
+noise-floor subtraction, and in testing it is **not** more robust than raw. Both curves jump inside the noise
+interval. The contrast the demo is about needs the trained head from `artifacts/vN`. Patient baselines recorded
+before this feature, or with a different encoder, show state A until they are re-recorded. For the demo, use
+**about 10 dB SNR**: at 0–5 dB, most noisy windows are (correctly) rejected as gaps.
+
+## Cohort reference risk (calibrated classifier)
+
+Next to within-person **drift**, the clinician view can show a **cohort reference**. It is the output of our own
+disease head (M3 on frozen WavLM features), calibrated with Platt scaling and shown as a band: low / moderate /
+elevated. It answers "how does this session compare with the Androids research cohort?", **not** "does this
+person have depression?".
+
+**How it is built** (`research/calibration.py`, step 6 in `research/colab_run.py`):
+
+1. **Out-of-fold logits only.** `run_cv(..., return_oof=True)` scores every window with the fold model that held
+   it out. Calibration is never fitted on training predictions.
+2. **Session level, at live length.** Window logits are averaged over 3-window pseudo-sessions (~24 s), because a
+   live check-in has 2–7 windows, not a whole 5-minute interview.
+3. **Platt scaling** (`p = sigmoid(a * logit + b)`, 2 parameters). 116 speakers is too few for isotonic regression.
+4. **Metrics with speaker-bootstrap CIs:** AUC, Brier score, expected calibration error (ECE), before and after
+   calibration, plus a reliability diagram. They are stored in `calibration.json` and `metrics.json`, and shown
+   in the dashboard under "How reliable is the cohort reference?".
+5. **Bands:** elevated ≥ the 80th percentile of control sessions, moderate ≥ the control median.
+6. **Gate:** if the session AUC's 95% CI includes 0.5 (spec §11), the card is hidden and says why.
+
+**Rules:** clinician only. The patient view never includes it, it is never combined with drift, it never sets
+the status, and it is dropped entirely for SAFETY check-ins. Without trained artifacts it shows "unavailable".
+
+**Known limitations (state these in the pitch):**
+
+- Calibrated to the **source cohort**: Italian interview speech, Androids recording conditions, ~55% depressed.
+  It is not corrected for language, microphone or task shift, which no data in this project can measure.
+- **No prevalence correction.** `calibration.prior_shift()` exists, but picking a target prevalence is a clinical
+  decision, so it is not applied.
+- Calibration is fitted on the 5 CV fold models and applied to the all-folds model that is shipped (standard
+  practice; the shipped model saw ~25% more speakers and may be slightly sharper).
+
+**Ways to improve on this after the hackathon:**
+
+- **Target-domain recalibration:** refit (or temperature-scale) on labeled English speech recorded the way the
+  app records, then apply prevalence (label-shift) correction for the intended screening population.
+- **Per-check-in uncertainty:** bootstrap the Platt parameters, or use conformal prediction to report a
+  calibrated set or interval instead of one band.
+- **Richer calibrators** once there is more data: isotonic regression, Venn-Abers, or beta calibration.
+- **Calibrated LLM evidence confidence:** the PHQ-9 evidence items carry an LLM-reported `confidence` that is not
+  calibrated. RLCR-style training (reinforcement learning with a calibration-aware reward such as the Brier score),
+  or post-hoc recalibration against clinician-labeled transcripts, would make that number meaningful.
+- **Calibrating drift alerts:** report the observed false-alert rate per environment (E3) next to τ in the UI.
+
+### Deviation: consistency-loss scale in M2/M3
+
+The spec writes the consistency term as α‖P(z_c) − P(z_n)‖² with α = 1. Summed over the 128 LayerNorm'd
+dimensions, that term is about 100× the disease cross-entropy, and in testing M2/M3 **never learned the disease
+task** (train AUC ≈ 0.5; early stopping returned near-untrained weights). The implementation uses the **mean** over
+the 128 dimensions (equivalent to α = 1/128 on the spec's formula). A regression test guards it. If M3 still
+looks unstable on real data, the spec's §11 fallbacks still apply (lower β, or ship M2).
+
 ## Check-in length: why 20 seconds
 
 A check-in must be at least **20 s of recording** with at least **15 s of actual speech**. This is a calibration

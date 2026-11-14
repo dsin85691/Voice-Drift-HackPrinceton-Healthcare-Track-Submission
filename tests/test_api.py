@@ -15,7 +15,18 @@ def post(client, pid, wav):
 
 def test_health(client):
     h = client.get("/api/health").json()
-    assert h["models_loaded"] and "artifacts_version" in h
+    assert h["models_loaded"] and "artifacts_version" in h and h["cohort_risk"] is False
+
+
+def test_calibration_endpoint_without_artifacts(client):
+    assert client.get("/api/calibration").json()["available"] is False
+
+
+def test_live_checkin_without_classifier_reports_cohort_unavailable(client, wav_bytes):
+    for i in range(6):
+        cid = post(client, "p_cr", wav_bytes(seconds=40, seed=i))
+        r = wait_result(client, cid)
+    assert r["cohort_risk"]["available"] is False and "prob" not in r["cohort_risk"]
 
 
 def test_live_checkin_baseline_then_scored_and_tmp_empty(client, wav_bytes):
@@ -34,7 +45,7 @@ def test_first_five_are_baseline_and_patient_sees_no_numbers(client, wav_bytes):
     wait_result(client, cid)
     pv = client.get(f"/api/checkins/{cid}", params={"role": "patient"}).json()
     assert pv["baseline_progress"] == [1, 5] and "Building your baseline (1/5)" in pv["message"]
-    for forbidden in ("drift", "reference_risk", "transcript", "evidence", "timing"):
+    for forbidden in ("drift", "reference_risk", "cohort_risk", "transcript", "evidence", "timing"):
         assert forbidden not in pv
 
 
@@ -67,7 +78,7 @@ def test_safety_lexicon_works_with_llm_down_and_hides_scores(client, wav_bytes):
     cid = post(client, "p_safe", wav_bytes(seconds=40))
     r = wait_result(client, cid)
     assert r["status"] == "SAFETY" and r["safety"] == {"triggered": True, "source": "lexicon"}
-    assert "drift" not in r and "reference_risk" not in r
+    assert "drift" not in r and "reference_risk" not in r and "cohort_risk" not in r
     pv = client.get(f"/api/checkins/{cid}", params={"role": "patient"}).json()
     assert pv["status"] == "SAFETY" and "988" in pv["safety"]["message"]
     tl = client.get("/api/patients/p_safe/timeline").json()

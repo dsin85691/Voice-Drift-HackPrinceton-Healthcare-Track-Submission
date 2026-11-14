@@ -62,13 +62,29 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     def health():
         return rt().health()
 
+    @app.get("/api/calibration")
+    def calibration():
+        """Clinician dashboard: how trustworthy the cohort reference is (reliability diagram, ECE, Brier, AUC)."""
+        cal = rt().cohort.cal
+        if not cal:
+            return {"available": False, "reason": "no calibration.json in the loaded artifacts yet"}
+        keep = ("model", "method", "session_windows", "n_sessions", "n_speakers", "source_prevalence", "bands",
+                "metrics", "gate_passed", "label", "caveats")
+        return {"available": True, **{k: cal[k] for k in keep if k in cal}}
+
     @app.get("/api/prompt")
     def prompt():
         return {"prompt_id": "default", "text": PROMPTS["default"]}
 
     # ------------------------------------------------------------------ check-ins
     @app.post("/api/patients/{pid}/checkins", status_code=202)
-    async def post_checkin(pid: str, audio: UploadFile = File(...), prompt_id: str = Form("default")):
+    async def post_checkin(pid: str, audio: UploadFile = File(...), prompt_id: str = Form("default"),
+                           interventions: str = Form("")):
+        try:   # noise events marked live during recording (JSON list); malformed input is ignored, never fatal
+            ivs = json.loads(interventions) if interventions else []
+            ivs = ivs if isinstance(ivs, list) else []
+        except ValueError:
+            ivs = []
         r = rt()
         with store.session() as s:
             if s.get(store.Patient, pid) is None:
@@ -83,7 +99,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             path.unlink(missing_ok=True)
             raise
         r.bus.emit(cid, "stage", {"stage": "received", "ms": 0})
-        threading.Thread(target=r.process, args=(cid, pid, path, prompt_id), daemon=True).start()
+        threading.Thread(target=r.process, args=(cid, pid, path, prompt_id, ivs[:20]), daemon=True).start()
         return {"checkin_id": cid}
 
     def _strip(ev: dict, role: str) -> dict:
@@ -164,7 +180,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                     continue
                 full = scoring.result_json(c)
                 rows.append({k: full.get(k) for k in ("checkin_id", "created_at", "status", "quality", "drift",
-                                                      "timing", "timing_chips", "reference_risk", "evidence",
+                                                      "timing", "timing_chips", "reference_risk", "cohort_risk", "has_window_analysis", "evidence",
                                                       "summary", "simulated", "transcript", "safety")})
                 rows[-1]["acted"] = (c.extra or {}).get("acted", False)
                 rows[-1]["environment"] = (c.extra or {}).get("environment")
@@ -212,6 +228,55 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 s.commit()
             done.append("p_demo")
         return {"patients": done}
+
+    @app.get("/api/checkins/{cid}/windows")
+    def checkin_windows(cid: str):
+        """Window-level raw-vs-projected analysis of one stored check-in (clinician view)."""
+        with store.session() as s:
+            ck = s.get(store.Checkin, cid)
+            if not ck:
+                raise HTTPException(404, "unknown check-in")
+            if ck.status == "SAFETY":
+                raise HTTPException(409, "no scores for safety check-ins")
+            wa = (ck.extra or {}).get("window_analysis")
+            if not wa:
+                raise HTTPException(404, "no window analysis for this check-in (seeded or recorded before the feature)")
+            return {"checkin_id": cid, "patient_id": ck.patient_id, "mode": "live_recording",
+                    "simulated": (ck.extra or {}).get("simulated", False),
+                    "versions": ck.versions, **wa}
+
+    @app.post("/api/demo/replay")
+    async def demo_replay(patient_id: str = Form(...), audio: UploadFile = File(...),
+                          kind: str = Form("babble_self"), start_seconds: float = Form(...),
+                          end_seconds: float = Form(...), snr_db: float = Form(5.0), seed: int = Form(0),
+                          noise_file: UploadFile | None = File(None)):
+        """Controlled replay: analyse the same clean speech with and without a known noise interval.
+        Analysis only, nothing is stored; the uploaded audio is deleted after processing."""
+        from .pipeline import noise as N
+        r = rt()
+        if kind not in N.KINDS:
+            raise HTTPException(422, f"kind must be one of {N.KINDS}")
+        if not (end_seconds > start_seconds >= 0) or not (-10 <= snr_db <= 40):
+            raise HTTPException(422, "need 0 <= start < end and -10 <= snr_db <= 40")
+        if kind == "file" and noise_file is None:
+            raise HTTPException(422, "kind=file needs a noise_file upload")
+        cid = store.new_id("replay")
+        clean = r.tmp / f"{cid}_clean{Path(audio.filename or 'a.wav').suffix or '.wav'}"
+        clean.write_bytes(await audio.read())
+        npath = None
+        if noise_file is not None and kind == "file":
+            npath = r.tmp / f"{cid}_noise{Path(noise_file.filename or 'n.wav').suffix or '.wav'}"
+            npath.write_bytes(await noise_file.read())
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(None, lambda: r.replay(
+                patient_id, clean, kind=kind, start_s=start_seconds, end_s=end_seconds, snr_db=snr_db,
+                seed=seed, noise_path=npath))
+        except Exception as e:
+            for p in (clean, npath):
+                if p:
+                    p.unlink(missing_ok=True)
+            raise HTTPException(422, f"replay failed: {e}") from e
 
     @app.post("/api/demo/compare")
     def demo_compare(body: CompareBody):

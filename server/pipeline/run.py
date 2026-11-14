@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .. import scoring, store
 from ..config import ROOT, get_config, resolve
-from . import acoustic, asr, decode, drift, language, quality, safety
+from . import acoustic, asr, decode, drift, language, noise, quality, safety, windows
 
 log = logging.getLogger("vd.run")
 
@@ -53,6 +53,7 @@ class Runtime:
         self.dm_raw = drift.load_drift_model(raw=True)
         self.acoustic = acoustic.AcousticBranch()
         self.reference = acoustic.ReferenceRisk()
+        self.cohort = acoustic.CohortRisk()
         self.asr = asr.ASR()
         self.language = language.LanguageBranch()
         self.bus = EventBus()
@@ -82,18 +83,21 @@ class Runtime:
             pass
         return {"models_loaded": True, "gpu": gpu, "artifacts_version": self.dm.version,
                 "llm_reachable": self.language.reachable, "encoder": self.acoustic.encoder_name,
-                "asr": self.asr.engine, "reference_risk": self.reference.model is not None}
+                "asr": self.asr.engine, "reference_risk": self.reference.model is not None,
+                "cohort_risk": self.cohort.available}
 
     # ------------------------------------------------------------------ the pipeline
-    def process(self, cid: str, pid: str, audio_path: Path, prompt_id: str = "default") -> None:
-        """Runs a full check-in. Always deletes the audio file, even on error."""
+    def process(self, cid: str, pid: str, audio_path: Path, prompt_id: str = "default",
+                interventions: list | None = None) -> None:
+        """Runs a full check-in. Always deletes the audio file, even on error.
+        interventions: known noise events marked during recording (seconds from start), for the visualization."""
         t_start = time.perf_counter()
         lat: dict[str, int] = {}
         emit = lambda k, d=None: self.bus.emit(cid, k, d)
         ms = lambda t: int((time.perf_counter() - t) * 1000)
         try:
             try:
-                self._process(cid, pid, audio_path, emit, lat, t_start, ms)
+                self._process(cid, pid, audio_path, emit, lat, t_start, ms, interventions)
             except Exception as e:  # never leave the client hanging
                 if isinstance(e, decode.DecodeError):
                     log.warning("check-in %s: %s", cid, str(e)[:120])
@@ -121,7 +125,44 @@ class Runtime:
                                     versions={"git": self.git}, extra={"error": err}))
                 s.commit()
 
-    def _process(self, cid, pid, audio_path, emit, lat, t_start, ms):
+    def window_analysis(self, s, pid: str, x, q, emb, interventions=None, before=None) -> dict:
+        """Raw-vs-projected window analysis of one recording against the patient's frozen baseline."""
+        prev = [c for c in scoring.history(s, pid) if before is None or c.created_at < before]
+        base = scoring.baseline_rows(prev, int(self.cfg.drift["baseline_n"]))
+        return windows.analyze(x=x, quality=q, emb=emb, baseline=base,
+                               encoder=emb.encoder if emb else self.acoustic.encoder_name,
+                               wcfg=dict(self.cfg.windows), interventions=interventions,
+                               population_meta=self.dm.meta, baseline_n=int(self.cfg.drift["baseline_n"]))
+
+    def replay(self, pid: str, clean_path: Path, *, kind: str, start_s: float, end_s: float, snr_db: float,
+               seed: int = 0, noise_path: Path | None = None) -> dict:
+        """Controlled replay (Mode 1): the SAME speech analysed clean and with a known noise interval.
+        Analysis only: nothing is stored as a check-in, so longitudinal drift is unaffected. Audio is deleted."""
+        try:
+            x = decode.decode_audio(clean_path)
+            nf = decode.decode_audio(noise_path) if noise_path else None
+        finally:
+            for p in (clean_path, noise_path):
+                if p:
+                    Path(p).unlink(missing_ok=True)
+        q_clean = quality.assess(x, self.cfg)
+        nz = noise.make_noise(kind, len(x), seed, ref=x, noise_file=nf)
+        xn = noise.mix_interval(x, nz, start_s, end_s, snr_db, q_clean.speech_mask)
+        iv = [{"type": f"controlled_{kind}_noise", "start_seconds": start_s, "end_seconds": end_s,
+               "snr_db": snr_db, "source": "replay"}]
+        out = {"mode": "controlled_replay", "patient_id": pid, "noise": {"kind": kind, "snr_db": snr_db,
+               "start_seconds": start_s, "end_seconds": end_s, "seed": seed}, "illustrative": False}
+        with store.session() as s:
+            for name, sig in (("clean", x), ("noisy", xn)):
+                q = quality.assess(sig, self.cfg)
+                emb = self.acoustic.embed(sig, q.speech_mask)   # always: windows decide validity (state D/E)
+                a = self.window_analysis(s, pid, sig, q, emb, iv)
+                if name == "clean":   # same interval, outlined only: no noise was added to this version
+                    a["interventions"] = [{**w, "type": "reference_interval_no_noise"} for w in a["interventions"]]
+                out[name] = a
+        return out
+
+    def _process(self, cid, pid, audio_path, emit, lat, t_start, ms, interventions=None):
         cfg = self.cfg
         t = time.perf_counter()
         x = decode.decode_audio(audio_path)
@@ -186,9 +227,17 @@ class Runtime:
                     "evidence_available": bool(lang and lang["available"]) or not scored,
                     "summary": (lang or {}).get("summary", ""),
                     "window_count": emb.window_count if emb else 0}
+        if emb is not None:   # clinician-only cohort reference; dropped for SAFETY by result_json
+            ck.extra["cohort_risk"] = self.cohort.score(emb.logit)
+        if emb is not None and emb.W is not None:       # per-window vectors: needed for window-level calibration
+            ck.window_vecs, ck.window_vecs_raw = store.mat_to_blob(emb.W), store.mat_to_blob(emb.W_raw)
         with store.session() as s:
             if s.get(store.Patient, pid) is None:
                 s.add(store.Patient(id=pid, display_name=pid, consent_at=store.utcnow()))
+            try:   # visualization only: a failure here must never break the check-in
+                ck.extra["window_analysis"] = self.window_analysis(s, pid, x, q, emb, interventions, ck.created_at)
+            except Exception:
+                log.exception("window analysis failed for %s", cid)
             scoring.apply_scoring(s, ck, vec=emb.v if emb else None, vec_raw=emb.v_raw if emb else None,
                                   timing=words_timing, safety=sf, dm=self.dm)
             lat["total"] = ms(t_start)

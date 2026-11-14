@@ -232,12 +232,35 @@ def synth(n_spk=40, win=8, A=2, seed=0):
 @pytest.fixture(scope="module")
 def cv():
     d = synth()
-    res, chosen = train_heads.run_cv(d, models=("L0", "M1", "M3"), seeds=(0,), epochs=6, layers=[2, 8])
-    return d, res, chosen
+    res, chosen, oof = train_heads.run_cv(d, models=("L0", "M1", "M3"), seeds=(0,), epochs=6, layers=[2, 8],
+                                          return_oof=True)
+    return d, res, chosen, oof
+
+
+def test_oof_logits_cover_every_window_and_carry_signal(cv):
+    from research import calibration
+    from research.stats import roc_auc_score
+    d, _, _, oof = cv
+    for m in ("L0", "M1", "M3"):
+        assert oof[m].shape == d.y.shape and not np.isnan(oof[m]).any()
+    S, Y, F, Z = calibration.session_logits(oof["L0"], d.spk, d.y, d.fold)
+    assert len(Z) == 40 * (8 // 3) and roc_auc_score(Y, Z) > 0.7       # OOF logits are aligned and informative
+    S, Y, F, Z = calibration.session_logits(oof["M3"], d.spk, d.y, d.fold)
+    assert roc_auc_score(Y, Z) > 0.55
+
+
+@pytest.mark.parametrize("kind", ["M2", "M3"])
+def test_consistency_loss_does_not_block_disease_learning(kind):
+    """Regression: with the consistency term summed over 128 dims, M2/M3 never learned (train AUC ~0.5)."""
+    from research.stats import roc_auc_score
+    d = synth()
+    tr_idx, va_idx = np.where(d.fold != 0)[0], np.where(d.fold == 0)[0]
+    P, H, _ = train_heads.train_head(d, kind, 2, tr_idx, va_idx, seed=0, epochs=15)
+    assert roc_auc_score(d.y[tr_idx], train_heads.predict_head(P, H, d.Zc[tr_idx, 2])) > 0.8
 
 
 def test_cv_runs_and_signal_is_found(cv):
-    d, res, chosen = cv
+    d, res, chosen, _ = cv
     assert set(chosen) == {0, 1, 2, 3, 4} and all(c["layer"] in (2, 8) for c in chosen.values())
     tab = evaluate.e1_table(res, B=200)
     l0 = next(r for r in tab if r["model"] == "L0" and r["snr"] == "clean")
@@ -281,14 +304,23 @@ def test_e3_and_export_roundtrip(tmp_path, monkeypatch):
     # export -> server loads the artifacts and tau/sigma_pop shapes line up
     d = synth(n_spk=20, win=24)
     chosen = {f: {"layer": 2, "C": 1.0} for f in range(5)}
-    out_dir, cfg = export.export(d, chosen, tmp_path / "artifacts", 1, {"E1": []}, "rev", seeds=(0,), epochs=3)
+    out_dir, cfg = export.export(d, chosen, tmp_path / "artifacts", 1, {"E1": []}, "rev", seeds=(0,), epochs=3,
+                                 calibration={"model": "M3", "a": 1.0, "b": 0.0, "gate_passed": True,
+                                              "bands": {"moderate": 0.4, "elevated": 0.7},
+                                              "metrics": {"ece": 0.05, "brier": 0.2, "auc": 0.7, "auc_ci": [0.6, 0.8]}})
     assert (out_dir / "projector.pt").exists() and json.loads((out_dir / "metrics.json").read_text()) == {"E1": []}
+    assert (out_dir / "disease_head.pt").exists() and (out_dir / "calibration.json").exists()
+    fd = torch.nn.Linear(128, 1); fd.load_state_dict(torch.load(out_dir / "disease_head.pt", weights_only=True))
     from server.config import get_config
     from server.pipeline import drift
     cfgd = get_config()
     monkeypatch.setitem(cfgd["artifacts"], "dir", str(tmp_path / "artifacts"))
     dm, dmr = drift.load_drift_model(), drift.load_drift_model(raw=True)
     assert dm.version == "v1" and dm.layer == 2 and dm.pca_components.shape == (16, 128)
+    wcal = cfg["window"]                                   # population window thresholds for the visualization
+    assert wcal["metric"] == "cosine" and wcal["proj"]["tau"] > 0 and wcal["raw"]["tau"] > 0
+    from server.pipeline.windows import population_calibration
+    assert population_calibration(dm.meta)["source"].startswith("population")
     assert dmr.pca_components.shape == (16, 768) and dm.tau == pytest.approx(cfg["tau"])
     # serving-side projector loads the exported weights (weights_only=True) and reproduces training-time output
     from research.heads import Projector

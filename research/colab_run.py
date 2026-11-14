@@ -43,14 +43,22 @@ from research import budget, evaluate, export, load_cache, train_heads
 with budget.stage("T1", VD):
     d = load_cache.load_data(f"{VD}/feats", f"{VD}/manifest.parquet")
     print(d.Zc.shape, "windows;", len(set(d.spk)), "speakers")
-    res, chosen = train_heads.run_cv(d, models=("L0", "M1", "M3"), device="cuda")
+    res, chosen, oof = train_heads.run_cv(d, models=("L0", "M1", "M3"), device="cuda", return_oof=True)
     print("layers picked per fold:", chosen)
     e1 = evaluate.e1_table(res)             # L0 vs M1 vs M3 at clean/20/10/5 dB, paired CI (M3-L0)
     # GATE 1: if every L0 AUC CI includes 0.5, apply the section 11 fallbacks before shipping.
     for r in e1: print(r)
     json.dump(e1, open(f"{VD}/e1_table.json", "w"), indent=1, default=float)       # persist before unassign
+    # Platt calibration of the deployed head (M3) on OUT-OF-FOLD 3-window session logits
+    from research import calibration
+    S, Y, F, Z = calibration.session_logits(oof["M3"], d.spk, d.y, d.fold)
+    cal = calibration.fit_calibration(S, Y, F, Z, model="M3")
+    print("calibration:", {k: cal["metrics"][k] for k in ("auc", "auc_ci", "ece", "ece_uncalibrated", "brier")},
+          "gate_passed:", cal["gate_passed"])
+    json.dump(cal, open(f"{VD}/calibration.json", "w"), indent=1, default=float)
     out_dir, cfg = export.export(d, chosen, f"{VD}/artifacts", version=1,
-                                 metrics={"E1": e1, "layers": chosen}, wavlm_revision="PIN_ME", device="cuda")
+                                 metrics={"E1": e1, "layers": chosen, "calibration": cal["metrics"]},
+                                 wavlm_revision="PIN_ME", device="cuda", calibration=cal)
     print("exported to", out_dir, "tau =", cfg["tau"])
 # (CPU alternative: drop the budget wrapper and device="cuda"; same code.)
 # TODO E2/E3: need the trained projector + per-control-speaker features; not wired up yet.

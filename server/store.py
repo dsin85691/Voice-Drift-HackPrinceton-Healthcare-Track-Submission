@@ -47,6 +47,9 @@ class Checkin(SQLModel, table=True):
     transcript: str = ""
     session_vec: bytes | None = Field(default=None, sa_column=Column(LargeBinary))      # 128 x fp32
     session_vec_raw: bytes | None = Field(default=None, sa_column=Column(LargeBinary))  # raw-z (robustness toggle)
+    # per-window vectors (npy bytes, shape [n_windows, d]); used for window-level calibration. Not audio.
+    window_vecs: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
+    window_vecs_raw: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
     versions: dict = Field(default_factory=dict, sa_column=Column(JSON))
     extra: dict = Field(default_factory=dict, sa_column=Column(JSON))  # safety, latency, evidence_dropped, simulated, chips...
 
@@ -89,17 +92,54 @@ def blob_to_vec(b: bytes | None) -> np.ndarray | None:
     return None if b is None else np.frombuffer(b, dtype="<f4").astype(np.float64)
 
 
+def mat_to_blob(m: np.ndarray | None) -> bytes | None:
+    """2-D float32 matrix with its shape (npy format)."""
+    if m is None:
+        return None
+    import io
+    buf = io.BytesIO()
+    np.save(buf, np.asarray(m, dtype="<f4"), allow_pickle=False)
+    return buf.getvalue()
+
+
+def blob_to_mat(b: bytes | None) -> np.ndarray | None:
+    if b is None:
+        return None
+    import io
+    return np.load(io.BytesIO(b), allow_pickle=False).astype(np.float64)
+
+
 def _make(url: str):
     kw = {"poolclass": StaticPool} if url in ("sqlite://", "sqlite:///:memory:") else {}
     return create_engine(url, connect_args={"check_same_thread": False, "timeout": 30}, **kw)
 
 
+def _migrate(eng) -> None:
+    """create_all() never adds columns to an existing table: add any new nullable ones (SQLite ALTER TABLE)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(eng)
+    for table in SQLModel.metadata.sorted_tables:
+        if not insp.has_table(table.name):
+            continue
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name not in have and col.nullable:
+                with eng.begin() as conn:
+                    conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" '
+                                      f'{col.type.compile(eng.dialect)}'))
+
+
+def _init(url: str):
+    eng = _make(url)
+    SQLModel.metadata.create_all(eng)
+    _migrate(eng)
+    return eng
+
+
 def engine():
     global _engine
     if _engine is None:
-        url = get_config().server["db_url"]
-        _engine = _make(url)
-        SQLModel.metadata.create_all(_engine)
+        _engine = _init(get_config().server["db_url"])
     return _engine
 
 
@@ -108,8 +148,7 @@ def reset_engine(url: str | None = None):
     global _engine
     if _engine is not None:
         _engine.dispose()
-    _engine = _make(url or get_config().server["db_url"])
-    SQLModel.metadata.create_all(_engine)
+    _engine = _init(url or get_config().server["db_url"])
     return _engine
 
 
