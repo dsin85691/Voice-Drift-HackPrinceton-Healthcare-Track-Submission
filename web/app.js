@@ -82,17 +82,27 @@ async function health() {
 const modelLabel = (h) => (h.encoder && !h.encoder.includes("fallback") ? h.encoder.replace("+", " + ") : "Fallback features (no trained model loaded)");
 
 // ------------------------------------------------------------------ shell + routing
-const NAV = [
+// Demo VIEW switch (not accounts): who the screen is speaking to. Stored per browser only. Anyone using this
+// computer can open either view; the switch changes navigation and wording, never access (see About & Privacy).
+let role = "patient";
+try { role = localStorage.getItem("vd_role") === "clinician" ? "clinician" : "patient"; } catch {}
+const isClin = () => role === "clinician";
+const setRole = (r) => { role = r; try { localStorage.setItem("vd_role", r); } catch {} };
+const NAV_PATIENT = [
   ["home", "Home", "#/", "home"], ["checkin", "Check-In", "#/checkin", "mic"], ["trends", "Trends", "#/trends", "trends"],
+  ["about", "About & Privacy", "#/about", "shield"],
+];
+const NAV_CLINICIAN = [
+  ["queue", "Review queue", "#/review", "queue"], ["patients", "Patients", "#/research", "report"],
   ["results", "Results", "#/results", "analysis"], ["about", "About & Privacy", "#/about", "shield"],
 ];
+const NAV = [...NAV_PATIENT, ...NAV_CLINICIAN];               // labels for the breadcrumb
 function renderNav(active) {
-  const nav = NAV.filter(([k]) => k !== "results" || resultsVisible());
-  document.getElementById("sidenav").innerHTML = nav.map(([k, label, href, ic]) => href
-    ? `<a class="navlink" href="${href}" ${k === active ? 'aria-current="page"' : ""}>${icon(ic)}${label}</a>`
-    : `<span class="navlink disabled" aria-disabled="true">${icon(ic)}${label}<span class="tag">Planned</span></span>`).join("");
-  document.getElementById("bottomnav").innerHTML = nav.filter(([k]) => ["home", "checkin", "trends", "results"].includes(k) || (k === "about" && !resultsVisible()))
-    .map(([k, label, href, ic]) => `<a href="${href}" ${k === active ? 'aria-current="page"' : ""}>${icon(ic, 22)}${label}</a>`).join("");
+  const nav = (isClin() ? NAV_CLINICIAN : NAV_PATIENT).filter(([k]) => k !== "results" || resultsVisible());
+  document.getElementById("sidenav").innerHTML = nav.map(([k, label, href, ic]) =>
+    `<a class="navlink" href="${href}" ${k === active ? 'aria-current="page"' : ""}>${icon(ic)}${label}</a>`).join("");
+  document.getElementById("bottomnav").innerHTML = nav
+    .map(([k, label, href, ic]) => `<a href="${href}" ${k === active ? 'aria-current="page"' : ""}>${icon(ic, 22)}${label.replace(" & Privacy", "").replace("Review queue", "Queue")}</a>`).join("");
 }
 async function renderTopbar() {
   const [pts, h, notes] = await Promise.all([api("/patients").catch(() => []), health(), api("/v1/notifications").catch(() => null)]);
@@ -102,17 +112,31 @@ async function renderTopbar() {
   const cur = opts.find((p) => p.id === S.pid) || opts[0];
   if (cur && cur.id !== S.pid) setPid(cur.id);
   const pageName = (NAV.find(([k]) => k === S.page) || [, "Review queue"])[1];
+  const seg = (r, label) => `<button type="button" data-role="${r}" aria-pressed="${role === r}" class="${role === r ? "primary" : ""}" style="min-height:36px;padding:6px 12px;font-size:14px">${label}</button>`;
   document.getElementById("topbar").innerHTML = `
-    <span class="crumb">Your workspace ${icon("chevron", 15)} <strong>${esc(S.page === "review" ? "Review queue" : pageName)}</strong></span>
+    <span class="crumb">${isClin() ? "Clinician view" : "Your workspace"} ${icon("chevron", 15)} <strong>${esc(pageName)}</strong></span>
     <span class="spacer"></span>
-    <label for="profile" class="small">Profile</label>
-    <select id="profile">${opts.map((p) => `<option value="${esc(p.id)}" ${p.id === S.pid ? "selected" : ""}>${esc(p.display_name)}</option>`).join("")}</select>
-    ${modeTag(cur && cur.data_mode)}
-    <a class="pill ${notes && notes.unresolved ? "navy" : "gray"}" href="#/review" title="Reviewer queue (demo: in-app only, nothing is sent externally)">${icon("report", 14)}Review queue${notes && notes.unresolved ? ` &middot; ${notes.unresolved} open` : ""}</a>
-    <span class="pill gray" title="Speech encoder in use">${icon("analysis", 14)}${esc(modelLabel(h))}</span>
-    <span class="mode">Research prototype</span>`;
+    <span class="row" style="gap:6px" role="group" aria-label="Viewing as (demo switch, no accounts)"><span class="small muted">Viewing as</span>${seg("patient", "Patient")}${seg("clinician", "Clinician")}<span class="tiny muted">demo, no accounts</span></span>
+    ${isClin() ? "" : '<label for="profile" class="small">You are</label>'}
+    ${isClin() ? "" : `<select id="profile">${opts.map((p) => `<option value="${esc(p.id)}" ${p.id === S.pid ? "selected" : ""}>${esc(p.display_name)}</option>`).join("")}</select>${modeTag(cur && cur.data_mode)}`}
+    ${isClin() ? `<a class="pill ${notes && notes.unresolved ? "navy" : "gray"}" href="#/review" title="Reviewer queue (demo: in-app only, nothing is sent externally)">${icon("report", 14)}${notes && notes.unresolved ? `${notes.unresolved} pending review${notes.unresolved === 1 ? "" : "s"}` : "No pending reviews"}</a>` : ""}
+    <span class="pill gray" title="Speech encoder in use">${icon("analysis", 14)}${esc(modelLabel(h))}</span>`;
   document.getElementById("sidefoot").innerHTML = `Not a diagnostic system.<br>${esc(modelLabel(h))}`;
-  document.getElementById("profile").onchange = (e) => { setPid(e.target.value); route(); };
+  const prof = document.getElementById("profile");
+  if (prof) prof.onchange = (e) => { setPid(e.target.value); route(); };
+  document.querySelectorAll("[data-role]").forEach((b) => (b.onclick = () => {
+    if (b.dataset.role === role) return;
+    setRole(b.dataset.role);
+    if (location.hash === "#/" || location.hash === "") route(); else location.hash = "#/";   // land on the role's home
+  }));
+}
+// A page that belongs to the other view: say so plainly, offer the switch (no access control is implied)
+function otherView(target) {
+  $app.innerHTML = `<div class="card stack"><h1>${target === "clinician" ? "This is part of the clinician view" : "Recording is in the patient view"}</h1>
+    <p>${target === "clinician" ? "The review queue and the patient list are shown in the clinician view." : "Check-ins are recorded from the patient view."}
+      This is a demo switch, not an account: anyone using this computer can open either view.</p>
+    <p><button class="primary" id="switchview">Switch to the ${target} view</button></p></div>`;
+  document.getElementById("switchview").onclick = () => { setRole(target); route(); };
 }
 
 let cleanup = () => {};
@@ -121,14 +145,20 @@ async function route() {
   const h = location.hash.replace(/^#/, "").split("?")[0] || "/";   // "#/trends?days=7" -> "/trends"
   const seg = h.split("/").filter(Boolean);
   const top = seg[0] || "home";
-  const active = { clinician: "about", research: "about", settings: "about", review: "about", windows: "results", analysis: "results" }[top] || top;
+  const clinPage = ["review", "research", "clinician"].includes(top);
+  const active = isClin()
+    ? ({ home: "queue", review: "queue", research: "patients", clinician: "patients", settings: "about", windows: "results", analysis: "results" }[top] || top)
+    : ({ settings: "about", windows: "trends", analysis: "trends" }[top] || top);
   S.results = await api("/results").catch(() => null);      // refreshed every navigation: picks up a newly copied file
-  S.page = top === "review" ? "review" : active;
+  S.page = active;
   renderNav(active);
   await renderTopbar();
   $app.innerHTML = '<p class="muted">Loading&hellip;</p>';
   try {
-    if (top === "home") await viewHome();
+    if (isClin() && top === "home") await viewReviewQueue();               // clinician lands on the queue
+    else if (!isClin() && clinPage) otherView("clinician");
+    else if (isClin() && top === "checkin") otherView("patient");
+    else if (top === "home") await viewHome();
     else if (top === "checkin") await viewCheckin();
     else if (top === "analysis" && seg[1] === "lab") await viewLab();
     else if (top === "analysis" || top === "windows") await viewAnalysis(seg[1] ? decodeURIComponent(seg[1]) : null);
@@ -175,7 +205,9 @@ async function viewHome() {
   const recent = cks.filter((c) => c.status !== "SAFETY").slice(-5);
   const recentScored = scoredCks.slice(-5);
   const nAbove = recentScored.filter((c) => c.drift && c.drift.exceeds).length;
-  const pendingFlag = cks.map((c) => c.review_flag).filter((f) => f && f.state === "pending").pop();
+  // Home is the PATIENT landing page: an open review is never announced to the patient (an experimental heuristic
+  // flag is a clinician-side workflow item); they see their normal trend and neutral wording only.
+  const pendingFlag = isClin() ? cks.map((c) => c.review_flag).filter((f) => f && f.state === "pending").pop() : null;
   const lastScored = scoredCks[scoredCks.length - 1];
   const fallbackEnc = h.encoder && h.encoder.includes("fallback");
   const signed = (v, more, less) => (v == null ? null : `${Math.abs(Math.round(v))}<small>% ${v < 0 ? less : v > 0 ? more : "change"}</small>`);
@@ -185,7 +217,7 @@ async function viewHome() {
       p: "Several recent recordings differ from this person's baseline, on different days. That is a prompt for a person to look closer, not a diagnosis.",
       btn: `<a class="btn primary" href="#/review/${encodeURIComponent(pendingFlag.flag_id)}">Open the review item ${icon("arrow", 17)}</a>` }
     : lastScored && lastScored.drift.exceeds ? {
-      active: true, ic: "info", h: "One recording above the boundary",
+      active: true, ic: "info", h: "One recording different from your usual",
       p: "A single recording can differ for many reasons: the room, the microphone, a slower morning. Repeating the check-in shows whether it repeats.",
       btn: synthetic ? `<a class="btn primary" href="#/trends">See the trend ${icon("arrow", 17)}</a>` : `<a class="btn primary" href="#/checkin?verify=${encodeURIComponent(lastScored.checkin_id)}">Repeat check-in ${icon("arrow", 17)}</a>` }
     : !ready ? {
@@ -212,7 +244,6 @@ async function viewHome() {
         <div class="vd-orb">${icon("sound", 60)}</div>
         <div class="vd-visual-foot">${waveformHtml()}<span>compared with your own baseline</span></div></div>
     </section>
-    ${resultsVisible() ? headlineHtml(res.aggregate) : ""}
     ${tl && tl.repeat_requested ? `<div class="callout info" style="margin:16px 0"><h3>Repeat check-in requested</h3><p class="small">Your reviewer asked for another check-in using the same reading passage. This is a request for another recording, not a treatment instruction.</p><a class="btn primary" href="#/checkin">${icon("mic")}Start check-in</a></div>` : ""}
     ${synthetic ? `<div class="callout caution" style="margin:16px 0"><h3>Synthetic demo profile</h3><p class="small">Every value on this profile is generated for the demo; the last two days simulate deliberately slower, flatter speech. Switch profile at the top to see real recordings.</p></div>` : ""}
 
@@ -227,8 +258,8 @@ async function viewHome() {
         <span class="metric-label">${lastScored && lastScored.pause_measure === "mean_pause_s" ? "Pause length" : "Pause time"}</span>
         <div class="metric-value">${signed(lastScored && lastScored.pause_duration_change_pct, "more", "less") || '&ndash;<small>not available</small>'}</div>
         <div class="metric-bottom"><span>vs. baseline</span>${miniSpark(series("pause_duration_change_pct"), "#C9805F")}</div></a>
-      <a class="metric-card lavender" href="#/review"><div class="metric-top"><span class="metric-icon purple">${icon("queue")}</span>${icon("arrow", 17)}</div>
-        <span class="metric-label">Above the boundary</span>
+      <a class="metric-card lavender" href="#/trends"><div class="metric-top"><span class="metric-icon purple">${icon("queue")}</span>${icon("arrow", 17)}</div>
+        <span class="metric-label">Different from your usual</span>
         <div class="metric-value">${nAbove}<small>of ${recentScored.length} compared</small></div>
         <div class="small-pills" aria-label="Last ${recent.length} check-ins">${recent.map((c, i) => { const k = c.drift && c.drift.exceeds ? "flag" : c.drift_score != null ? "good" : "none";
           return `<span class="pill-${k}" title="${fmtDate(c.created_at)}: ${k === "flag" ? "above boundary" : k === "good" ? "within boundary" : "not compared"}">${i + 1}</span>`; }).join("") || '<span class="pill-none">&ndash;</span>'}</div></a>
@@ -244,7 +275,7 @@ async function viewHome() {
         ${ready ? sessionChart(cks.slice(-14), { height: 200 }) : `<p class="muted">The trend appears once the baseline is ready (${Math.min(passes, need)}/${need}).</p>`}</section>
       <section class="attention ${attn.active ? "active" : ""}" aria-labelledby="attn-h"><div class="attention-icon">${icon(attn.ic, 24)}</div>
         <div class="eyebrow">What we're noticing</div><h3 id="attn-h">${attn.h}</h3><p>${attn.p}</p>
-        ${ready ? `<div class="attention-stat"><strong>${nAbove}<span> / ${recentScored.length}</span></strong><span>recent compared check-ins<br>above the boundary</span></div>`
+        ${ready ? `<div class="attention-stat"><strong>${nAbove}<span> / ${recentScored.length}</span></strong><span>recent compared check-ins<br>different from your usual</span></div>`
           : `<div class="dots" aria-hidden="true" style="margin:auto 0 14px">${Array.from({ length: need }, (_, i) => `<span class="${i < Math.min(passes, need) ? "on" : ""}"></span>`).join("")}</div>`}
         ${attn.btn}</section>
     </div>
@@ -259,7 +290,7 @@ async function viewHome() {
     <div style="margin-top:22px">${sampleCardHtml(res)}</div>
     <section class="education"><div class="education-art">${icon("shield", 30)}</div>
       <div><strong>Built around a personal baseline, not a population average.</strong><p>Voices differ from person to person, so each check-in is compared with the same person's earlier readings of the same passage, with recording quality checked first.</p></div>
-      <a class="small" href="#/${resultsVisible() ? "results" : "about"}">How it works &rarr;</a></section>`;
+      <a class="small" href="#/about">How it works &rarr;</a></section>`;
   wireSample(res);
   const hs = document.getElementById("herosample");
   if (hs) hs.onclick = () => { const b = document.getElementById("samplebtn"); if (b) { b.scrollIntoView({ behavior: "smooth", block: "center" }); b.click(); } };
@@ -367,8 +398,8 @@ function sessionChart(cks, { height = 240 } = {}) {
     }
     path += `${pen ? "L" : "M"}${cx} ${y(v)} `; pen = true;
     const above = !!(c.drift && c.drift.exceeds);          // the stored decision, never re-derived here
-    const rev = c.review_flag ? `<circle cx="${cx}" cy="${y(v)}" r="12" fill="none" stroke="var(--navy)" stroke-width="2"/>` : "";
-    const tip = `${fmtDate(c.created_at)}: ${v.toFixed(2)} &times; boundary${above ? " (above boundary)" : ""}${c.review_flag ? `, part of a review (${c.review_flag.state})` : ""}${c.simulated ? ", simulated" : ""}${c.acted ? ", acted" : ""}`;
+    const rev = c.review_flag && isClin() ? `<circle cx="${cx}" cy="${y(v)}" r="12" fill="none" stroke="var(--navy)" stroke-width="2"/>` : "";
+    const tip = `${fmtDate(c.created_at)}: ${v.toFixed(2)} &times; boundary${above ? " (above boundary)" : ""}${c.review_flag && isClin() ? `, part of a review (${c.review_flag.state})` : ""}${c.simulated ? ", simulated" : ""}${c.acted ? ", acted" : ""}`;
     s += above
       ? `<g class="pt" data-ck="${esc(c.checkin_id)}" tabindex="0" style="cursor:pointer">${rev}<path d="M${cx} ${y(v) - 7}l7 7-7 7-7-7z" fill="var(--amber)"/><title>${tip}</title></g>`
       : `<g class="pt" data-ck="${esc(c.checkin_id)}" tabindex="0" style="cursor:pointer">${rev}<circle cx="${cx}" cy="${y(v)}" r="6" fill="var(--teal)"/><title>${tip}</title></g>`;
@@ -383,11 +414,11 @@ function sessionChart(cks, { height = 240 } = {}) {
   return `<figure>${s}
     <div class="legend"><span>${icon("check", 12)} <span class="box" style="background:var(--teal);border-radius:50%"></span>within boundary</span>
       <span><span class="box" style="background:var(--amber);transform:rotate(45deg)"></span>above boundary</span>
-      ${cks.some((c) => c.review_flag) ? '<span><span class="box" style="border:2px solid var(--navy);border-radius:50%;background:none"></span>part of a review-queue item</span>' : ""}
+      ${isClin() && cks.some((c) => c.review_flag) ? '<span><span class="box" style="border:2px solid var(--navy);border-radius:50%;background:none"></span>part of a review-queue item</span>' : ""}
       <span>&#9675; baseline / not compared</span><span>&times; not usable</span></div>
     <p class="small muted">Vertical axis: how far each check-in's voice is from your baseline, as a multiple of the usual-range boundary (1 = the edge of normal day-to-day variation). Horizontal axis: check-in date.
       ${vals.length} compared check-in${vals.length === 1 ? "" : "s"}, ${nAbove} above the boundary, ${nBase} baseline or not compared, ${nRej} not usable. Each point is one whole check-in (session level).
-      A single point above 1 is an observation; a review-queue item needs 2 of the last 3 usable check-ins above 1, on at least 2 different days within 7 days. Select a point to see its measurements.</p>
+      ${isClin() ? "A single point above 1 is an observation; a review-queue item needs 2 of the last 3 usable check-ins above 1, on at least 2 different days within 7 days. " : "A single point above 1 can happen for many reasons, such as the room, the microphone or a slower morning. "}Select a point to see its measurements.</p>
     ${acted ? `<p class="small"><span class="mode synthetic_demo">acted</span> marks simulated days that stand in for deliberately slower, flatter ("acted") speech. The values are generated for the demo; nobody's real speech changed.</p>` : ""}</figure>`;
 }
 
@@ -600,7 +631,7 @@ function sampleResultHtml(j) {
     <dl class="meta">
       <dt>Recording quality</dt><dd>${qualityPill(c.quality.verdict)} ${fmt(c.speech_duration_seconds, 0)} s of speech</dd>
       <dt>Overall voice pattern</dt><dd>${overall}<br><span class="tiny muted">Session score relative to this speaker's boundary. Above 1.0 means elevated; exactly 1.0 counts as within range.</span></dd>
-      <dt>Review queue</dt><dd>${c.review_required ? "A review item exists for this pattern." : "No review item. A single recording can't create one: the rule needs 2 of the last 3 usable check-ins above the boundary, on 2 different days."}</dd>
+      ${isClin() ? `<dt>Review queue</dt><dd>${c.review_required ? "A review item exists for this pattern." : "No review item. A single recording can't create one: the rule needs 2 of the last 3 usable check-ins above the boundary, on 2 different days."}</dd>` : ""}
     </dl>
     ${acousticHtml(c.acoustic_features, c.acoustic_summary, { heading: "Individual measurements" })}
     <p class="tiny muted">Individual measurements and the overall pattern are separate: one measurement can change a lot while the overall pattern stays within range, and the other way round.</p>
@@ -1215,7 +1246,8 @@ async function viewAbout() {
           <dt>Audio retention</dt><dd>The audio file is deleted when analysis finishes, including when it fails.</dd>
           <dt>What is kept</dt><dd>Recording-quality results, comparison scores, per-window speech features (not audio), a coarse loudness summary, and the transcript, in a local database on this computer.</dd>
           <dt>Transcripts</dt><dd>${h.llm_reachable ? "Sent to Anthropic's API to find quotes for the evidence view. Audio is never sent." : "Not sent anywhere: no language-model key is configured."}</dd>
-          <dt>Who can see results</dt><dd>Anyone using this app on this computer. There are no accounts, and nothing is sent to a clinician automatically.</dd>
+          <dt>Who can see results</dt><dd>Anyone using this app on this computer. There are no accounts, and nothing is sent to a clinician automatically.
+            The "Viewing as: Patient / Clinician" switch at the top only changes which pages and wording are shown, for the demo; it is not a login and does not restrict access.</dd>
         </dl>
         <p class="small muted">Derived features are not claimed to be anonymous; they stay on this computer.</p></section>
       <section class="card stack"><h2>Your data</h2>
@@ -1304,7 +1336,7 @@ async function viewReviewDetail(fid) {
           <td>${e.has_window_analysis ? `<a href="#/analysis/${encodeURIComponent(e.checkin_id)}">Window analysis</a>` : ""}</td></tr>`; }).join("")}
       </tbody></table></div>
       ${(f.verifications || []).length ? `<p class="small"><strong>Repeat check-ins</strong> (shown for context, never counted as extra evidence): ${f.verifications.map((v) => `${fmtDT(v.recorded_at)}: ${esc((VRESULT[v.result] || [v.result || "pending"])[0])}`).join("; ")}</p>` : ""}
-      <p class="small"><a href="#/trends" id="totrends">Open this person's Trends &rarr;</a></p></section>
+      <p class="small"><a href="#/research/${encodeURIComponent(f.patient_id)}" id="totrends">Open this person's check-ins &rarr;</a></p></section>
     <div class="grid half" style="margin-top:20px">
       <section class="card"><h2>Model context</h2><dl class="meta small">
         <dt>Encoder</dt><dd>${esc(sm.encoder)}</dd><dt>Projection</dt><dd>${esc(sm.projection)}</dd>
@@ -1331,7 +1363,7 @@ async function viewReviewDetail(fid) {
 // ------------------------------------------------------------------ Research workspace (former clinician view)
 async function viewResearch() {
   const list = await api("/patients");
-  $app.innerHTML = `<h1>Research workspace</h1><p class="lead">All profiles on this computer. Neutral comparison labels only; no risk scores.</p>
+  $app.innerHTML = `<div class="eyebrow"><span class="line"></span>Clinician view</div><h1>Patients</h1><p class="lead">All profiles on this computer. Neutral comparison labels only; no risk scores. Pending reviews are in the <a href="#/review">review queue</a>.</p>
     <div class="card tablewrap"><table><thead><tr><th>Profile</th><th>Data</th><th>Latest comparison</th><th>Last check-in</th><th class="num">Open notes</th></tr></thead><tbody>
       ${list.map((p) => `<tr class="click" data-id="${esc(p.id)}" tabindex="0"><td>${esc(p.display_name)}</td><td>${modeTag(p.data_mode)}</td><td>${statusPill(p.status)}</td><td>${p.last_checkin ? fmtDT(p.last_checkin) : "&ndash;"}</td><td class="num">${p.open_alerts}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No profiles yet.</td></tr>'}
     </tbody></table></div>`;
@@ -1348,7 +1380,7 @@ async function viewResearchDetail(pid) {
   let sel = cks.length ? cks[cks.length - 1].checkin_id : null;
   const render = () => {
     const c = cks.find((x) => x.checkin_id === sel);
-    $app.innerHTML = `<a href="#/research">&larr; Research workspace</a>
+    $app.innerHTML = `<a href="#/research">&larr; Patients</a>
       <h1>${esc(tl.patient.display_name)} ${modeTag(tl.patient.data_mode)}</h1>
       ${tl.alerts.length ? `<section class="card stack"><h2>Notes for review</h2>${[...tl.alerts].reverse().map((a) => `<div class="row small"><strong>${esc(ALERT_NAMES[a.kind] || a.kind)}</strong><span class="muted">${fmtDT(a.created_at)}</span>
         <a href="#" data-ck="${esc(a.checkin_id)}">view check-in</a>${a.acked_at ? `<span class="muted">reviewed by ${esc(a.acked_by)}${a.note ? ": " + esc(a.note) : ""}</span>` : `<input id="note_${a.id}" placeholder="Note" aria-label="Review note"><button data-ack="${a.id}">Mark reviewed</button>`}</div>`).join("")}</section>` : ""}
@@ -1385,7 +1417,7 @@ function checkinDetail(c) {
     ${!safety && c.acoustic_features ? acousticHtml(c.acoustic_features, c.acoustic_summary, { heading: "Speech measurements" }) : ""}
     ${contextText(c.context) ? `<p class="small"><strong>Reported context:</strong> ${esc(contextText(c.context))}</p>` : ""}
     ${c.has_window_analysis ? `<p><a class="btn" href="#/analysis/${encodeURIComponent(c.checkin_id)}">${icon("analysis")}Window-by-window analysis</a></p>` : ""}
-    ${!safety ? `<h3>Evidence quotes</h3>${(c.evidence || []).length ? c.evidence.map((e) => `<p class="small"><span class="pill gray">${esc(e.item)}</span> &ldquo;${esc(e.quote)}&rdquo;</p>`).join("") : '<p class="muted small">None found (or evidence unavailable).</p>'}
+    ${!safety && isClin() ? `<h3>Evidence quotes</h3>${(c.evidence || []).length ? c.evidence.map((e) => `<p class="small"><span class="pill gray">${esc(e.item)}</span> &ldquo;${esc(e.quote)}&rdquo;</p>`).join("") : '<p class="muted small">None found (or evidence unavailable).</p>'}
       <h3>Transcript</h3><div class="transcript small">${c.transcript ? highlight(c.transcript, c.evidence) : '<span class="muted">Transcript unavailable.</span>'}</div>` : ""}
   </section>`;
 }

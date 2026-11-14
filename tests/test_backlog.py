@@ -117,6 +117,36 @@ def test_queue_items_carry_trigger_score_and_reviewed_leaves_pending(client):
     assert client.get("/api/v1/notifications").json()["unresolved"] == 0
 
 
+# ------------------------------------------------------------------ synthetic drift showcase spec (another.md)
+def test_seeded_sam_raises_exactly_one_open_review_by_the_rule_and_reset_is_idempotent(client):
+    for _ in range(2):                                                       # loading twice: still exactly one
+        assert client.post("/api/demo/reset", json={"scenario": "all"}).status_code == 200
+        open_ = client.get("/api/v1/review-flags", params={"status": "OPEN"}).json()
+        assert [f["patient_id"] for f in open_] == ["p_drift"]
+    fid = open_[0]["flag_id"]
+    d = client.get(f"/api/v1/review-flags/{fid}").json()
+    qual = sorted(e["recorded_at"][:10] for e in d["evidence"] if e["role"] == "qualifying")
+    tl = client.get("/api/patients/p_drift/timeline", params={"days": 365}).json()
+    by_day = {c["created_at"][:10]: c for c in tl["checkins"]}
+    assert qual == sorted(day for day, c in by_day.items() if c.get("acted"))  # the two acted days (Nov 13, 14)
+    assert d["audit"][0]["action"] == "created"                              # made by the rule, not inserted
+    # one boundary everywhere: baseline, timeline and every scored check-in
+    taus = {c["drift"]["tau"] for c in tl["checkins"] if c.get("drift")}
+    assert taus == {tl["tau"]} == {tl["baseline"]["tau"]}
+    last = tl["checkins"][-1]
+    assert last["drift_status"] == "elevated" and last["review_flag"]["flag_id"] == fid
+    assert sum(1 for c in tl["checkins"] if c.get("drift") and c["drift"]["exceeds"]) == 2
+    pts = {p["id"]: p for p in client.get("/api/patients").json()}
+    assert pts["p_drift"]["status"] == last["status"] and pts["p_drift"]["open_review_flags"] == 1
+    assert pts["p_stable"]["open_review_flags"] == 0
+    assert client.get("/api/v1/review-flags", params={"status": "OPEN"}).json()[0]["patient_id"] == "p_drift"
+    # acknowledge -> leaves OPEN; a fresh demo load brings it back as OPEN
+    client.post(f"/api/v1/review-flags/{fid}/actions", json={"action": "acknowledge", "actor": "r", "note": ""})
+    assert client.get("/api/v1/review-flags", params={"status": "OPEN"}).json() == []
+    client.post("/api/demo/reset", json={"scenario": "all"})
+    assert [f["status"] for f in client.get("/api/v1/review-flags", params={"status": "OPEN"}).json()] == ["OPEN"]
+
+
 # ------------------------------------------------------------------ VD-07
 def test_aggregate_writes_traceable_calibration_artifacts(tmp_path):
     pytest.importorskip("torch")
