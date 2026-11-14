@@ -1,0 +1,19 @@
+# --- serving (laptop) ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlmodel>=0.0.16
+pydantic>=2
+numpy
+scipy
+pyyaml
+python-multipart
+httpx
+av                      # bundles ffmpeg libs; decodes webm/opus without a system ffmpeg
+# optional, enable real models (the app falls back gracefully without them):
+# faster-whisper        # ASR small.en int8
+# silero-vad            # ONNX VAD (otherwise an energy VAD is used)
+# torch transformers huggingface_hub   # WavLM encoder + projector, Kintsugi DAM
+# --- tests ---
+pytest
+# --- research (Colab) ---
+# pandas pyarrow soundfile matplotlib scikit-learn(only for the t-SNE plot)

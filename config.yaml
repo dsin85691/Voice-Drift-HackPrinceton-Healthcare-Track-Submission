@@ -1,0 +1,61 @@
+﻿# Voice Drift Monitor - all thresholds and model ids live here (spec section 10).
+server:
+  host: 127.0.0.1
+  port: 8000
+  db_url: sqlite:///voice_drift.db
+  tmp_dir: tmp
+  tmp_sweep_s: 300
+
+audio:
+  sample_rate: 16000
+  min_s: 20
+  max_s: 90
+  window_s: 8.0
+  min_tail_s: 4.0
+
+quality:
+  reject_speech_s: 15
+  reject_snr_db: 12
+  reject_clipping: 0.01
+  warn_speech_s: 25
+  warn_snr_db: 18
+  warn_clipping: 0.002
+
+drift:
+  k: 16
+  baseline_n: 5
+  shrink_n0: 5
+  # Defaults used when artifacts/v*/drift_config.json is absent (fallback spectral features).
+  tau: 1.47
+  sigma_pop: 0.4
+  warn_weight: 0.5
+  confirm_sum: 1.5
+  confirm_last: 3
+  # Population SD of timing features (shrinkage prior).
+  timing_sigma_pop:
+    speech_rate: 18.0
+    pause_rate: 2.5
+    mean_pause: 0.12
+
+artifacts:
+  dir: artifacts
+  version: auto   # "auto" = newest artifacts/v*; falls back to spectral features if none
+
+models:
+  wavlm: microsoft/wavlm-base
+  wavlm_revision: main      # PIN to a commit hash before the demo
+  asr: small.en
+  asr_compute: int8
+  dam_repo: KintsugiHealth/dam
+  dam_ckpt: dam3.1.ckpt
+  dam_revision: main        # PIN to a commit hash before the demo
+
+llm:
+  enabled: true
+  model: claude-haiku-5-5
+  timeout_s: 8
+  api_url: https://api.anthropic.com/v1/messages
+  # key from ANTHROPIC_API_KEY (.env)
+
+safety:
+  lexicon: safety/lexicon.yaml

@@ -1,0 +1,15 @@
+.env
+env
+*.env
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+tmp/
+data/
+feats/
+*.npy
+*.parquet
+androids*/
+artifacts/
+voice_drift.db

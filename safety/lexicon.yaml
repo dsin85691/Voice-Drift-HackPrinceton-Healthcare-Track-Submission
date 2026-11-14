@@ -1,0 +1,17 @@
+# Self-harm / suicidal-ideation phrases. Case-insensitive regexes, matched on the transcript.
+# Deliberately over-inclusive: a false positive shows a support panel, a false negative is worse.
+patterns:
+  - "\\bkill(ing)? myself\\b"
+  - "\\bend(ing)? (it all|my life|things)\\b"
+  - "\\bsuicid(e|al)\\b"
+  - "\\bwant(ed)? to die\\b"
+  - "\\bwish (i|that i) (was|were) dead\\b"
+  - "\\bbetter off (dead|without me)\\b"
+  - "\\b(hurt|harm|cut)(ing|ting)? myself\\b"
+  - "\\bself[- ]?harm\\b"
+  - "\\btake my (own )?life\\b"
+  - "\\bno (reason|point) (to|in) (live|living|going on)\\b"
+  - "\\bdon'?t want to (be here|live|wake up)\\b"
+  - "\\bcan'?t go on\\b"
+  - "\\bend my life\\b"
+  - "\\bnot (be|being) alive\\b"
