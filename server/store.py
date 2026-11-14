@@ -32,6 +32,10 @@ class Patient(SQLModel, table=True):
     consent_at: NaiveDatetime | None = None
     created_at: NaiveDatetime = Field(default_factory=utcnow)
     simulated: bool = False
+    # review workflow (alerting spec E5). "demo_consent" is a hackathon stand-in, never real authorization.
+    monitoring_enrollment_status: str | None = None     # enrolled / not_enrolled
+    review_consent_status: str | None = None            # demo_consent / consented / none
+    assigned_reviewer_id: str | None = None
 
 
 class Checkin(SQLModel, table=True):
@@ -73,6 +77,81 @@ class Alert(SQLModel, table=True):
     acked_by: str | None = None
     acked_at: NaiveDatetime | None = None
     note: str | None = None
+
+
+class SessionScore(SQLModel, table=True):
+    """Session-level score as seen by the alert engine (provenance frozen at evaluation time)."""
+    checkin_id: str = Field(primary_key=True)
+    patient_id: str = Field(index=True)
+    session_distance: float | None = None
+    session_threshold: float | None = None
+    normalized_score: float | None = None
+    threshold_exceeded: bool | None = None
+    score_status: str = "none"              # scored / not_scored
+    monitoring_context_id: str | None = None
+    model_version: str | None = None
+    projection_version: str | None = None
+    baseline_id: str | None = None
+    calibration_id: str | None = None
+    calculated_at: NaiveDatetime = Field(default_factory=utcnow)
+
+
+class ReviewFlag(SQLModel, table=True):
+    flag_id: str = Field(primary_key=True)
+    patient_id: str = Field(index=True)
+    rule_id: str
+    rule_version: str
+    monitoring_context_id: str
+    status: str = "OPEN"                    # OPEN / ACKNOWLEDGED / REVIEWED / CLOSED / DISMISSED
+    data_mode: str = "real_recording"
+    created_at: NaiveDatetime = Field(default_factory=utcnow)
+    acknowledged_at: NaiveDatetime | None = None
+    reviewed_at: NaiveDatetime | None = None
+    closed_at: NaiveDatetime | None = None
+    assigned_reviewer_id: str | None = None
+    summary: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class FlagEvidence(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    flag_id: str = Field(index=True)
+    checkin_id: str
+    role: str                               # qualifying / supporting
+    added_at: NaiveDatetime = Field(default_factory=utcnow)
+
+
+class NotificationOutbox(SQLModel, table=True):
+    notification_id: str = Field(primary_key=True)
+    flag_id: str = Field(index=True)
+    recipient_id: str | None = None
+    channel: str = "in_app"
+    delivery_status: str = "pending"        # delivered_in_app / suppressed / failed
+    external_delivery: bool = False
+    attempt_count: int = 0
+    payload: dict = Field(default_factory=dict, sa_column=Column(JSON))   # minimal: no ids, scores or audio
+    created_at: NaiveDatetime = Field(default_factory=utcnow)
+    sent_at: NaiveDatetime | None = None
+    read_at: NaiveDatetime | None = None
+
+
+class AuditEvent(SQLModel, table=True):
+    event_id: str = Field(primary_key=True)
+    actor_id: str
+    entity_type: str
+    entity_id: str = Field(index=True)
+    action: str
+    timestamp: NaiveDatetime = Field(default_factory=utcnow)
+    reason_code: str | None = None
+    detail: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class MonitoringEvaluation(SQLModel, table=True):
+    """Idempotency: one stored result per patient_id + checkin_id + rule_version."""
+    key: str = Field(primary_key=True)
+    patient_id: str = Field(index=True)
+    checkin_id: str
+    result: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: NaiveDatetime = Field(default_factory=utcnow)
 
 
 class EventLog(SQLModel, table=True):
@@ -165,7 +244,13 @@ def log_event(checkin_id: str, stage: str, ms: int = 0, error: str | None = None
 def purge_patient(pid: str) -> None:
     with session() as s:
         cids = [c.id for c in s.exec(select(Checkin).where(Checkin.patient_id == pid))]
-        for model, col in ((Alert, Alert.patient_id), (Checkin, Checkin.patient_id),
+        fids = [f.flag_id for f in s.exec(select(ReviewFlag).where(ReviewFlag.patient_id == pid))]
+        if fids:
+            for model, col in ((FlagEvidence, FlagEvidence.flag_id), (NotificationOutbox, NotificationOutbox.flag_id),
+                               (AuditEvent, AuditEvent.entity_id)):
+                s.exec(delete(model).where(col.in_(fids)))
+        for model, col in ((Alert, Alert.patient_id), (Checkin, Checkin.patient_id), (SessionScore, SessionScore.patient_id),
+                           (ReviewFlag, ReviewFlag.patient_id), (MonitoringEvaluation, MonitoringEvaluation.patient_id),
                            (Baseline, Baseline.patient_id), (Patient, Patient.id)):
             s.exec(delete(model).where(col == pid))
         if cids:

@@ -101,21 +101,8 @@ def apply_scoring(s: Session, ck: Checkin, *, vec: np.ndarray | None, vec_raw: n
     ck.status = D.decide_status(safety=False, baseline_ready=baseline_ready, confirmed=confirmed,
                                 exceeds=exceeds, dam_high=dam_high, reject_run=run)
 
-    def add(kind: str):
-        a = Alert(id=new_id("a"), patient_id=ck.patient_id, checkin_id=ck.id, kind=kind)
-        s.add(a)
-        alerts.append(a)
-
-    if ck.status == "RED":
-        add("DRIFT")
-    elif ck.status == "AMBER":
-        if run >= 2:
-            open_missed = s.exec(select(Alert).where(Alert.patient_id == ck.patient_id, Alert.kind == "MISSED",
-                                                     Alert.acked_at == None)).first()  # noqa: E711
-            if not open_missed:
-                add("MISSED")
-        if exceeds or dam_high:
-            add("REVIEW")
+    # Speech-change review requests are created by the persistence-based engine in server/monitoring.py (alerting
+    # spec v1.0), evaluated after the check-in is saved. Only the SAFETY path (above) creates an immediate alert.
     return alerts
 
 

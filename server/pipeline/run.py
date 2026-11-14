@@ -16,6 +16,15 @@ from . import acoustic, asr, decode, drift, language, noise, quality, safety, wi
 log = logging.getLogger("vd.run")
 
 
+def demo_enrollment() -> dict:
+    """Profiles created by this demo app are enrolled with the explicit hackathon stand-in 'demo_consent'
+    (alerting spec E5); it is never real-world authorization, and only applies in demo notification mode."""
+    if get_config().monitoring["notification_mode"] != "demo":
+        return {"monitoring_enrollment_status": "not_enrolled", "review_consent_status": "none"}
+    return {"monitoring_enrollment_status": "enrolled", "review_consent_status": "demo_consent",
+            "assigned_reviewer_id": get_config().monitoring["default_reviewer"]}
+
+
 class EventBus:
     """Per-check-in ordered event list with replay, so late SSE subscribers miss nothing."""
 
@@ -233,7 +242,7 @@ class Runtime:
             ck.window_vecs, ck.window_vecs_raw = store.mat_to_blob(emb.W), store.mat_to_blob(emb.W_raw)
         with store.session() as s:
             if s.get(store.Patient, pid) is None:
-                s.add(store.Patient(id=pid, display_name=pid, consent_at=store.utcnow()))
+                s.add(store.Patient(id=pid, display_name=pid, consent_at=store.utcnow(), **demo_enrollment()))
             try:   # visualization only: a failure here must never break the check-in
                 ck.extra["window_analysis"] = self.window_analysis(s, pid, x, q, emb, interventions, ck.created_at)
             except Exception:
@@ -245,5 +254,12 @@ class Runtime:
             s.add(ck)
             s.commit()
             res = scoring.result_json(ck)
+        try:   # review-flag engine runs on the SAVED check-in; never blocks or breaks the check-in itself
+            from .. import monitoring
+            with store.session() as s:
+                monitoring.evaluate(s, pid, cid)
+                s.commit()
+        except Exception:
+            log.exception("monitoring evaluation failed for %s", cid)
         emit("result", res)
 

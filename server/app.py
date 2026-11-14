@@ -12,13 +12,14 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlmodel import select
 
 from . import scoring, store
 from .config import ROOT, get_config
 from .pipeline import drift as drift_mod
-from .pipeline.run import Runtime
+from . import monitoring
+from .pipeline.run import Runtime, demo_enrollment
 from .seed import load_scenario
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -27,6 +28,21 @@ log = logging.getLogger("vd.app")
 PROMPTS = {"default": "Tell me about your day so far - how you slept, how your energy has been, "
                       "and what you have been looking forward to."}
 SEVERITY = {"SAFETY": 0, "RED": 1, "AMBER": 2, "GREEN": 3, "BASELINE": 4}
+
+
+class EvaluateBody(BaseModel):
+    """Only identifiers: thresholds and scores always come from the server's stored results (spec 11)."""
+    model_config = ConfigDict(extra="forbid")
+    patient_id: str
+    checkin_id: str
+    data_mode: str | None = None
+
+
+class FlagActionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str            # acknowledge | review | close | dismiss | note
+    actor: str
+    note: str = ""
 
 
 class AckBody(BaseModel):
@@ -96,7 +112,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         r = rt()
         with store.session() as s:
             if s.get(store.Patient, pid) is None:
-                s.add(store.Patient(id=pid, display_name=pid, consent_at=store.utcnow()))
+                s.add(store.Patient(id=pid, display_name=pid, consent_at=store.utcnow(), **demo_enrollment()))
                 s.commit()
         cid = store.new_id("c")
         suffix = Path(audio.filename or "a.webm").suffix or ".webm"
@@ -165,11 +181,17 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 status = last.status if last else "BASELINE"
                 if any(a.kind == "SAFETY" for a in open_alerts):
                     status = "SAFETY"
+                open_flags = s.exec(select(store.ReviewFlag).where(store.ReviewFlag.patient_id == p.id,
+                                                                   store.ReviewFlag.status.in_(monitoring.ACTIVE))).all()
+                last_eval = s.exec(select(store.MonitoringEvaluation).where(store.MonitoringEvaluation.patient_id == p.id)
+                                   .order_by(store.MonitoringEvaluation.created_at.desc())).first()
                 out.append({"id": p.id, "display_name": p.display_name, "simulated": p.simulated, "status": status,
                             "data_mode": "synthetic_demo" if p.simulated else "real_recording",
                             "last_checkin": last.created_at.isoformat() + "Z" if last else None,
                             "last_quality": (last.quality or {}).get("verdict") if last else None,
-                            "open_alerts": len(open_alerts), "checkins": len(cks),
+                            "open_alerts": len(open_alerts) + len(open_flags), "open_review_flags": len(open_flags),
+                            "monitoring_state": last_eval.result.get("monitoring_state") if last_eval else None,
+                            "checkins": len(cks),
                             "valid_checkins": sum(1 for c in cks if (c.quality or {}).get("verdict") in ("PASS", "WARN")
                                                   and c.status != "SAFETY")})
         out.sort(key=lambda r: (SEVERITY.get(r["status"], 9), r["display_name"]))
@@ -242,7 +264,8 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         if body.scenario in ("blank", "all"):
             store.purge_patient("p_demo")
             with store.session() as s:
-                s.add(store.Patient(id="p_demo", display_name="Demo speaker (live)", consent_at=store.utcnow()))
+                s.add(store.Patient(id="p_demo", display_name="Demo speaker (live)", consent_at=store.utcnow(),
+                                    **demo_enrollment()))
                 s.commit()
             done.append("p_demo")
         return {"patients": done}
@@ -297,6 +320,70 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 if p:
                     p.unlink(missing_ok=True)
             raise HTTPException(422, f"replay failed: {e}") from e
+
+    # ------------------------------------------------------------------ speech-change review flags (alerting spec)
+    # Demo deployment: no authentication (local app on 127.0.0.1, synthetic/consented demo data only). A research or
+    # clinical deployment must add authentication + role checks before these endpoints (spec 8.1, 10, 11).
+    @app.post("/api/v1/monitoring/evaluate")
+    def monitoring_evaluate(body: EvaluateBody):
+        with store.session() as s:
+            ck = s.get(store.Checkin, body.checkin_id)
+            if ck is not None and body.data_mode and body.data_mode != monitoring.data_mode(ck):
+                raise HTTPException(409, f"data_mode mismatch: stored check-in is {monitoring.data_mode(ck)}")
+            try:
+                out = monitoring.evaluate(s, body.patient_id, body.checkin_id, actor="api")
+            except LookupError as e:
+                raise HTTPException(404, str(e)) from e
+            s.commit()
+            return out
+
+    @app.get("/api/v1/review-flags")
+    def list_flags(status: str | None = None, reviewer: str | None = None, since: str | None = None,
+                   data_mode: str | None = None):
+        with store.session() as s:
+            q = select(store.ReviewFlag)
+            if status:
+                q = q.where(store.ReviewFlag.status.in_([x.strip().upper() for x in status.split(",")]))
+            if reviewer:
+                q = q.where(store.ReviewFlag.assigned_reviewer_id == reviewer)
+            if data_mode:
+                q = q.where(store.ReviewFlag.data_mode == data_mode)
+            rows = list(s.exec(q.order_by(store.ReviewFlag.created_at.desc())))   # by time, never by score
+            if since:
+                rows = [f for f in rows if f.created_at.isoformat() >= since]
+            return [monitoring.flag_json(f, s) for f in rows]
+
+    @app.get("/api/v1/review-flags/{flag_id}")
+    def get_flag(flag_id: str):
+        with store.session() as s:
+            f = s.get(store.ReviewFlag, flag_id)
+            if f is None:
+                raise HTTPException(404, "unknown review flag")
+            return monitoring.flag_json(f, s, detail=True)
+
+    @app.post("/api/v1/review-flags/{flag_id}/actions")
+    def flag_action(flag_id: str, body: FlagActionBody):
+        with store.session() as s:
+            try:
+                f = monitoring.act(s, flag_id, body.action, body.actor, body.note)
+            except LookupError as e:
+                raise HTTPException(404, str(e)) from e
+            except ValueError as e:
+                raise HTTPException(409, str(e)) from e
+            s.commit()
+            return monitoring.flag_json(f, s, detail=True)
+
+    @app.get("/api/v1/notifications")
+    def notifications():
+        """In-app indicator for the (demo) review queue. Minimal payloads only."""
+        with store.session() as s:
+            rows = list(s.exec(select(store.NotificationOutbox).order_by(store.NotificationOutbox.created_at.desc())))
+            active = {f.flag_id for f in s.exec(select(store.ReviewFlag).where(store.ReviewFlag.status.in_(monitoring.ACTIVE)))}
+            return {"mode": get_config().monitoring["notification_mode"], "external_delivery": False,
+                    "unresolved": sum(1 for n in rows if n.flag_id in active),
+                    "items": [{"flag_id": n.flag_id, "subject": n.payload.get("subject"), "body": n.payload.get("body"),
+                               "delivery_status": n.delivery_status, "created_at": n.created_at.isoformat() + "Z"}
+                              for n in rows[:20]]}
 
     @app.get("/api/results")
     def results():

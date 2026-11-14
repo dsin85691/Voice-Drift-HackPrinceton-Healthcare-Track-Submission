@@ -19,7 +19,13 @@ const sameDay = (iso) => new Date(iso).toDateString() === new Date().toDateStrin
 let stored = null;
 try { stored = localStorage.getItem("vd_pid"); } catch {}
 // No saved choice yet: open on the (synthetic, labelled) drift profile so the demo starts on a changed voice.
-const S = { pid: stored || null, health: null };
+const S = { pid: stored || null, health: null, results: null };
+// Results visibility (per browser): "auto" = show the evidence only if results/aggregate.json exists on the server;
+// "show" / "hide" force it for rehearsal. Never changes or invents data: "show" without a file still says pending.
+let resultsMode = "auto";
+try { resultsMode = localStorage.getItem("vd_results_mode") || "auto"; } catch {}
+const setResultsMode = (m) => { resultsMode = m; try { localStorage.setItem("vd_results_mode", m); } catch {} };
+const resultsVisible = () => resultsMode === "show" || (resultsMode === "auto" && !!(S.results && S.results.aggregate));
 const setPid = (p) => { S.pid = p; try { localStorage.setItem("vd_pid", p); } catch {} };
 
 // Lucide-style outline icons, drawn in-house (24x24, stroke = currentColor)
@@ -65,14 +71,15 @@ const NAV = [
   ["results", "Results", "#/results", "analysis"], ["about", "About & Privacy", "#/about", "shield"],
 ];
 function renderNav(active) {
-  document.getElementById("sidenav").innerHTML = NAV.map(([k, label, href, ic]) => href
+  const nav = NAV.filter(([k]) => k !== "results" || resultsVisible());
+  document.getElementById("sidenav").innerHTML = nav.map(([k, label, href, ic]) => href
     ? `<a class="navlink" href="${href}" ${k === active ? 'aria-current="page"' : ""}>${icon(ic)}${label}</a>`
     : `<span class="navlink disabled" aria-disabled="true">${icon(ic)}${label}<span class="tag">Planned</span></span>`).join("");
-  document.getElementById("bottomnav").innerHTML = NAV.filter(([k]) => ["home", "checkin", "trends", "results"].includes(k))
+  document.getElementById("bottomnav").innerHTML = nav.filter(([k]) => ["home", "checkin", "trends", "results"].includes(k) || (k === "about" && !resultsVisible()))
     .map(([k, label, href, ic]) => `<a href="${href}" ${k === active ? 'aria-current="page"' : ""}>${icon(ic, 22)}${label}</a>`).join("");
 }
 async function renderTopbar() {
-  const [pts, h] = await Promise.all([api("/patients").catch(() => []), health()]);
+  const [pts, h, notes] = await Promise.all([api("/patients").catch(() => []), health(), api("/v1/notifications").catch(() => null)]);
   const ids = pts.map((p) => p.id);
   const opts = (ids.includes("p_demo") ? pts : [{ id: "p_demo", display_name: "Demo speaker (live)", data_mode: "real_recording" }, ...pts]);
   if (!S.pid) S.pid = ids.includes("p_drift") ? "p_drift" : "p_demo";
@@ -83,6 +90,7 @@ async function renderTopbar() {
     <select id="profile">${opts.map((p) => `<option value="${esc(p.id)}" ${p.id === S.pid ? "selected" : ""}>${esc(p.display_name)}</option>`).join("")}</select>
     ${modeTag(cur && cur.data_mode)}
     <span class="spacer"></span>
+    <a class="pill ${notes && notes.unresolved ? "navy" : "gray"}" href="#/review" title="Reviewer queue (demo: in-app only, nothing is sent externally)">${icon("report", 14)}Review queue${notes && notes.unresolved ? ` &middot; ${notes.unresolved} open` : ""}</a>
     <span class="pill gray" title="Speech encoder in use">${icon("analysis", 14)}${esc(modelLabel(h))}</span>
     <span class="mode">Research prototype</span>`;
   document.getElementById("sidefoot").innerHTML = `Not a diagnostic system.<br>${esc(modelLabel(h))}`;
@@ -95,7 +103,8 @@ async function route() {
   const h = location.hash.replace(/^#/, "").split("?")[0] || "/";   // "#/trends?days=7" -> "/trends"
   const seg = h.split("/").filter(Boolean);
   const top = seg[0] || "home";
-  const active = { clinician: "about", research: "about", settings: "about", windows: "results", analysis: "results" }[top] || top;
+  const active = { clinician: "about", research: "about", settings: "about", review: "about", windows: "results", analysis: "results" }[top] || top;
+  S.results = await api("/results").catch(() => null);      // refreshed every navigation: picks up a newly copied file
   renderNav(active);
   await renderTopbar();
   $app.innerHTML = '<p class="muted">Loading&hellip;</p>';
@@ -107,6 +116,8 @@ async function route() {
     else if (top === "trends") await viewTrends();
     else if (top === "results") await viewResults();
     else if (top === "about" || top === "settings") await viewAbout();
+    else if (top === "review" && seg[1]) await viewReviewDetail(decodeURIComponent(seg[1]));
+    else if (top === "review") await viewReviewQueue();
     else if ((top === "research" || top === "clinician") && seg[1]) await viewResearchDetail(decodeURIComponent(seg[1]));
     else if (top === "research" || top === "clinician") await viewResearch();
     else $app.innerHTML = `<div class="card"><h1>Page not found</h1><a href="#/">Go to Home</a></div>`;
@@ -136,14 +147,14 @@ async function viewHome() {
   const today = cks.filter((c) => sameDay(c.created_at) && c.quality.verdict !== "REJECT");
   const last = cks[cks.length - 1];
   const h = await health();
-  const res = await api("/results").catch(() => ({}));
+  const res = S.results || {};
   const synthetic = tl && tl.patient.data_mode === "synthetic_demo";
   const lastChips = last && (last.timing_chips || []).length ? last.timing_chips.map((x) => sentence(x.text)).join(" ") : "";
   $app.innerHTML = `
     <h1>Voice Drift</h1>
     <p class="lead" style="max-width:78ch"><strong>Changes in how someone speaks can be tracked between clinic visits with a one-minute recording at home.</strong>
       But a noisy kitchen or a new phone can change a voice recording as much as the speaker does, so Voice Drift checks whether a change comes from the speaker or from the room.</p>
-    ${headlineHtml(res.aggregate)}
+    ${resultsVisible() ? headlineHtml(res.aggregate) : ""}
     ${synthetic ? `<div class="callout caution" style="margin:16px 0 20px"><h3>Synthetic demo profile</h3><p class="small">Every value on this profile is generated for the demo; the last two days simulate deliberately slower, flatter speech. Switch profile at the top to see real recordings.</p></div>` : ""}
     <div class="grid two">
       <section class="card hero stack" aria-labelledby="ci-h">
@@ -654,6 +665,14 @@ function verdict(h) {
     parts.push(sp.rate >= sr.rate - 0.05 ? "and kept its sensitivity to the controlled change" : `but it also detected the controlled change less often (${pct(sr)} → ${pct(sp)})`);
   let s = parts.join(" ") + ".";
   if (overlap(fr, fp)) s += " The confidence intervals for false alerts overlap, so this difference is not established with this sample.";
+  // Sanity check: by construction ~10% of CLEAN sessions should cross. If a model is far above that, its boundary
+  // doesn't fit these speakers, so compare how much the noise ADDS on top of each model's own clean rate.
+  const cr = h.clean_false_alert_raw, cp = h.clean_false_alert_projection;
+  if (cr && cp && cr.rate != null && cp.rate != null && Math.max(cr.rate, cp.rate) > 0.2) {
+    const add = (n, c) => Math.round((n.rate - c.rate) * 100);
+    s += ` Caveat: on clean, unchanged speech the boundaries already flag ${pct(cr)} (raw) and ${pct(cp)} (projection), against a design target of about 10%, so at least one boundary doesn't fit these speakers.` +
+         ` Measured against each model's own clean rate, the added noise raised false alerts by ${add(fr, cr)} points for raw and ${add(fp, cp)} points for the projection.`;
+  }
   return s;
 }
 function resultsTable(agg, level) {
@@ -665,7 +684,12 @@ function resultsTable(agg, level) {
       ${models.map((m) => `<td class="num"><strong>${pct(R[m][c])}</strong><br><span class="tiny muted">${ci(R[m][c])} &middot; n=${R[m][c].n}</span></td>`).join("")}</tr>`).join("")}</tbody></table>`;
 }
 async function viewResults() {
-  const res = await api("/results");
+  if (!resultsVisible()) {
+    $app.innerHTML = `<h1>Results</h1><div class="card"><p>The evidence section is hidden in this view${resultsMode === "hide" ? " (switched off on this browser)" : " because no results file is present on this server"}.</p>
+      <p class="small muted">Change it under <a href="#/about">About &amp; Privacy &rarr; Presentation</a>.</p></div>`;
+    return;
+  }
+  const res = S.results || await api("/results");
   const agg = res.aggregate, h = agg && agg.headline, snap = res.demo_snapshot, d = res.demo;
   const canRun = d.clip_present && d.profile_baseline_ready;
   const why = !d.clip_present ? `Add a consented 40–60 s recording at <code>demo/clip.wav</code> to enable it.`
@@ -768,7 +792,7 @@ function timingTable(cks) {
 // ------------------------------------------------------------------ About & Privacy
 async function viewAbout() {
   const h = await health();
-  const res = await api("/results").catch(() => ({}));
+  const res = S.results || {};
   const team = res.team || [];
   $app.innerHTML = `<h1>About &amp; Privacy</h1>
     <div class="grid half">
@@ -810,7 +834,13 @@ async function viewAbout() {
         <hr><h2>Demo &amp; research</h2>
         <p class="small muted">Synthetic profiles are labelled "Synthetic demo data" everywhere they appear and are kept separate from real recordings.</p>
         <div class="row">${["all", "stable", "drift", "blank"].map((s) => `<button data-reset="${s}">Load demo: ${s}</button>`).join("")}</div>
+        <fieldset class="stack" style="border:1px solid var(--line);border-radius:10px;padding:12px 14px"><legend><strong>Presentation: results section</strong></legend>
+          <p class="small muted" style="margin:0">Results file on this server: <strong>${S.results && S.results.aggregate ? `found (generated ${esc(S.results.aggregate.generated_at)})` : "not found"}</strong>. This switch only changes what this browser shows.</p>
+          ${[["auto", "Automatic: show only if a results file is present"], ["show", "Always show the Results tab and headline"], ["hide", "Hide results (plain product view)"]]
+            .map(([v, l]) => `<label class="check"><input type="radio" name="rmode" value="${v}" ${resultsMode === v ? "checked" : ""}> ${l}</label>`).join("")}
+        </fieldset>
         <p><a href="#/research">${icon("report", 16)} Research workspace</a> <span class="small muted">(all profiles, transcripts, evidence quotes)</span></p>
+        <p><a href="#/review">${icon("report", 16)} Review queue</a> <span class="small muted">(speech-change reviews; demo, in-app only)</span></p>
       </section>
     </div>`;
   document.getElementById("del").onclick = async () => {
@@ -818,8 +848,77 @@ async function viewAbout() {
     await api(`/patients/${encodeURIComponent(S.pid)}`, { method: "DELETE" });
     document.getElementById("delmsg").textContent = "Deleted.";
   };
+  $app.querySelectorAll('input[name="rmode"]').forEach((r) => (r.onchange = () => { setResultsMode(r.value); route(); }));
   $app.querySelectorAll("[data-reset]").forEach((b) => (b.onclick = async () => {
     b.disabled = true; await post("/demo/reset", { scenario: b.dataset.reset }); S.health = null; route();
+  }));
+}
+
+// ------------------------------------------------------------------ Review queue (alerting spec v1.0, reviewer-facing)
+// A flag is a nonurgent, experimental request for human review: no risk levels, sorted by time, never by score.
+const FLAG_STATUS = { OPEN: ["Open", "navy", "info"], ACKNOWLEDGED: ["Acknowledged", "teal", "check"], REVIEWED: ["Reviewed", "teal", "check"],
+  CLOSED: ["Closed", "gray", "check"], DISMISSED: ["Dismissed", "gray", "x"] };
+const flagPill = (s) => pill(FLAG_STATUS[s] || [s, "gray", "info"]);
+async function viewReviewQueue() {
+  const show = new URLSearchParams(location.hash.split("?")[1] || "").get("status") || "open";
+  const flags = await api(`/v1/review-flags${show === "open" ? "?status=OPEN,ACKNOWLEDGED,REVIEWED" : ""}`);
+  $app.innerHTML = `<h1>Review queue</h1>
+    <p class="lead">Speech-change reviews raised by a persistence rule: at least 2 of the last 3 quality-passing check-ins above the person's own boundary, on separate days, within 7 days. This is an experimental heuristic, not a clinical decision rule.</p>
+    <div class="callout info small" style="margin-bottom:16px">${icon("shield", 16)} Demo mode: this queue is internal to the app. Nothing is sent to anyone outside it, and no real clinician is contacted.</div>
+    <nav class="tabs" aria-label="Filter"><a href="#/review?status=open" ${show === "open" ? 'aria-current="page"' : ""}>Open</a><a href="#/review?status=all" ${show === "all" ? 'aria-current="page"' : ""}>All</a></nav>
+    <div class="card tablewrap"><table><caption class="sr-only">Review flags, newest first</caption><thead><tr><th>Person</th><th>Flag</th><th>Detected</th><th class="num">Supporting check-ins</th><th>Status</th><th>Recording quality</th><th>Data</th><th></th></tr></thead><tbody>
+      ${flags.map((f) => `<tr><td>${esc(f.patient_display_name)}</td><td>${esc(f.flag)}</td><td>${fmtDT(f.created_at)}</td><td class="num">${f.supporting_checkins}</td>
+        <td>${flagPill(f.status)}</td><td class="small">${f.summary.window} quality-passing check-ins</td><td>${modeTag(f.data_mode)}</td>
+        <td><a class="btn" href="#/review/${encodeURIComponent(f.flag_id)}">View details</a></td></tr>`).join("") || `<tr><td colspan="8" class="muted">No ${show === "open" ? "open " : ""}reviews.</td></tr>`}
+    </tbody></table></div>`;
+}
+
+async function viewReviewDetail(fid) {
+  const f = await api(`/v1/review-flags/${encodeURIComponent(fid)}`);
+  const tl = await timeline(f.patient_id, 365);
+  const sm = f.summary, ACTIONS = { OPEN: ["acknowledge", "dismiss", "close"], ACKNOWLEDGED: ["review", "dismiss", "close"], REVIEWED: ["close"] };
+  const LABEL = { acknowledge: "Acknowledge", review: "Mark reviewed", close: "Close", dismiss: "Dismiss" };
+  const acts = ACTIONS[f.status] || [];
+  $app.innerHTML = `<a href="#/review">&larr; Review queue</a>
+    <h1>Speech Change Review ${flagPill(f.status)}</h1>
+    <p class="row small">${esc(f.patient_display_name)} ${modeTag(f.data_mode)} <span class="muted">Detected ${fmtDT(f.created_at)} &middot; assigned to ${esc(f.assigned_reviewer_id || "nobody")}</span></p>
+    <div class="grid two">
+      <section class="card stack"><h2>Summary</h2>
+        <p><strong>${esc(sm.explanation)}</strong></p>
+        <dl class="meta small"><dt>Rule</dt><dd>${esc(f.rule_id)} v${esc(f.rule_version)} (experimental heuristic)</dd>
+          <dt>Pattern</dt><dd>${fmtDT(sm.first_elevated)} to ${fmtDT(sm.last_elevated)}</dd>
+          <dt>Qualifying recordings</dt><dd>${sm.qualifying} of ${sm.window}, on ${sm.distinct_days} days</dd></dl>
+        <p class="small muted">A crossing of the boundary describes measured speech, not a health condition. This review does not prescribe any follow-up.</p></section>
+      <section class="card stack"><h2>Review</h2>
+        ${acts.length ? `<label for="rnote">Note (optional)</label><textarea id="rnote" rows="3" maxlength="500"></textarea>
+          <div class="row">${acts.map((a) => `<button data-act="${a}" class="${a === acts[0] ? "primary" : ""}">${LABEL[a]}</button>`).join("")}<button data-act="note">Add note only</button></div>`
+          : `<p class="muted small">This review is ${esc(f.status.toLowerCase())}. Dismissing a review does not mean the speech change was insignificant.</p>`}
+        <p id="ractmsg" role="status" class="small"></p></section>
+    </div>
+    <section class="card" style="margin-top:20px"><h2>Evidence</h2>
+      ${tl ? sessionChart(tl.checkins.slice(-14)) : ""}
+      <div class="tablewrap"><table><caption class="sr-only">Check-ins behind this review</caption><thead><tr><th>Check-in</th><th>Role</th><th>Quality</th><th class="num">Difference (&times; boundary)</th><th>Speech timing</th><th></th></tr></thead><tbody>
+        ${f.evidence.map((e) => `<tr><td>${fmtDT(e.recorded_at)}</td><td>${e.role === "qualifying" ? "Above boundary" : "Within boundary (context)"}</td><td>${qualityPill(e.quality)}</td>
+          <td class="num">${fmt(e.normalized_score)}</td><td class="small">${(e.timing_chips || []).map((x) => esc(sentence(x.text))).join(" ") || "&ndash;"}</td>
+          <td>${e.has_window_analysis ? `<a href="#/analysis/${encodeURIComponent(e.checkin_id)}">Window analysis</a>` : ""}</td></tr>`).join("")}
+      </tbody></table></div>
+      <p class="small"><a href="#/trends" id="totrends">Open this person's Trends &rarr;</a></p></section>
+    <div class="grid half" style="margin-top:20px">
+      <section class="card"><h2>Model context</h2><dl class="meta small">
+        <dt>Encoder</dt><dd>${esc(sm.encoder)}</dd><dt>Projection</dt><dd>${esc(sm.projection)}</dd>
+        <dt>Baseline</dt><dd>${esc(sm.baseline_id || "&ndash;")}</dd><dt>Boundary</dt><dd>${esc(sm.calibration_id || "&ndash;")} (${esc(sm.calibration)})</dd>
+        <dt>Settings</dt><dd>${sm.config.min_elevated} of ${sm.config.window_sessions}, &ge;${sm.config.min_distinct_days} days, ${sm.config.lookback_days}-day window, ${sm.config.cooldown_hours} h cooldown</dd></dl>
+        <ul class="small">${f.limitations.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></section>
+      <section class="card"><h2>History</h2><ol class="small">${f.audit.map((a) => `<li>${fmtDT(a.timestamp)}: <strong>${esc(a.action)}</strong> by ${esc(a.actor_id)}${a.reason_code ? ` (${esc(a.reason_code)})` : ""}${a.detail && a.detail.note ? `: &ldquo;${esc(a.detail.note)}&rdquo;` : ""}</li>`).join("")}</ol>
+        <p class="tiny muted">Notifications: ${f.notifications.map((n) => `${esc(n.channel)}, ${esc(n.delivery_status)}, external delivery ${n.external_delivery ? "yes" : "no"}`).join("; ")}</p></section>
+    </div>`;
+  document.getElementById("totrends").onclick = () => setPid(f.patient_id);
+  $app.querySelectorAll("[data-act]").forEach((b) => (b.onclick = async () => {
+    const msg = document.getElementById("ractmsg");
+    try {
+      await post(`/v1/review-flags/${encodeURIComponent(fid)}/actions`, { action: b.dataset.act, actor: "reviewer_demo", note: document.getElementById("rnote").value });
+      viewReviewDetail(fid); renderTopbar();
+    } catch (e) { msg.textContent = "That action isn't allowed now (" + e.message + ")."; }
   }));
 }
 

@@ -65,6 +65,18 @@ llm:
 safety:
   lexicon: safety/lexicon.yaml
 
+monitoring:                                 # speech-change review flags (alerting spec v1.0) - EXPERIMENTAL heuristic
+  rule_id: persistence_2of3_7d
+  rule_version: "1.0"
+  window_sessions: 3                        # look at the latest 3 eligible check-ins...
+  min_sessions: 3                           # ...and require 3 before evaluating at all
+  min_elevated: 2                           # >= 2 of them above their session boundary (R > 1)
+  min_distinct_days: 2                      # on >= 2 different calendar dates
+  lookback_days: 7                          # all within 7 days of the evaluated check-in
+  cooldown_hours: 72                        # after a flag is closed/dismissed
+  notification_mode: demo                   # demo = in-app queue only; external delivery is never sent
+  default_reviewer: reviewer_demo
+
 results:
   aggregate: results/aggregate.json         # written by: python -m research.lite.aggregate
   demo_snapshot: results/demo_snapshot.json # written by the one-click demo (last real run)

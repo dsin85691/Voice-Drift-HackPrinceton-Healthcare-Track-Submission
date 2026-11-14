@@ -115,11 +115,11 @@ def test_scenarios_alerts_ack_compare_and_delete(client):
     assert pts["p_drift"]["status"] == "RED" and pts["p_stable"]["status"] == "GREEN"
     assert client.get("/api/patients").json()[0]["id"] == "p_drift"          # severity sort
     tl = client.get("/api/patients/p_drift/timeline").json()
-    assert tl["baseline"]["n"] == 5 and any(a["kind"] == "DRIFT" for a in tl["alerts"])
+    assert tl["baseline"]["n"] == 5 and tl["alerts"] == []          # speech change no longer raises old-style alerts
     assert tl["checkins"][-1]["simulated"] and tl["checkins"][-1]["acted"]
-    aid = next(a["id"] for a in tl["alerts"] if a["kind"] == "DRIFT")
-    acked = client.post(f"/api/alerts/{aid}/ack", json={"clinician": "dr_x", "note": "called patient"}).json()
-    assert acked["acked_by"] == "dr_x"
+    flags = client.get("/api/v1/review-flags").json()
+    assert [f["patient_id"] for f in flags] == ["p_drift"] and flags[0]["status"] == "OPEN"
+    assert pts["p_drift"]["open_review_flags"] == 1 and pts["p_stable"]["open_review_flags"] == 0
     # robustness: noisy stable day crosses tau with raw features but not with the invariance head
     stable = client.get("/api/patients/p_stable/timeline").json()["checkins"]
     noisy = next(c for c in stable if c["quality"]["verdict"] == "WARN")

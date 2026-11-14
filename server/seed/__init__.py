@@ -19,8 +19,9 @@ def load_scenario(name: str, dm: drift.DriftModel, base_time=None) -> str:
     store.purge_patient(pid)
     now = base_time or store.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
     with store.session() as s:
+        from ..pipeline.run import demo_enrollment
         s.add(store.Patient(id=pid, display_name=data["patient"]["display_name"], consent_at=store.utcnow(),
-                            simulated=True))
+                            simulated=True, **demo_enrollment()))
         s.commit()
         for i, d in enumerate(data["days"]):
             ck = store.Checkin(
@@ -35,5 +36,8 @@ def load_scenario(name: str, dm: drift.DriftModel, base_time=None) -> str:
             scoring.apply_scoring(s, ck, vec=np.array(d["vec"]), vec_raw=np.array(d["vec_raw"]),
                                   timing=d["timing"], safety={"triggered": False, "source": None}, dm=dm)
             s.add(ck)
+            s.commit()
+            from .. import monitoring                       # same review-flag engine as live check-ins
+            monitoring.evaluate(s, pid, ck.id, actor="seed")
             s.commit()
     return pid

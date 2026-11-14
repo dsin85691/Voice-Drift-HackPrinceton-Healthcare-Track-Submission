@@ -1,0 +1,454 @@
+{
+ "generated_at": "2026-11-14T20:00:10Z",
+ "illustrative": false,
+ "headline": {
+  "level": "session (3 windows, ~24 s)",
+  "projection_model": "P1",
+  "noise_condition": "added held-out noise or babble at 10 dB SNR",
+  "false_alert_raw": {
+   "rate": 0.9444,
+   "ci": [
+    0.8889,
+    1.0
+   ],
+   "n": 36
+  },
+  "false_alert_projection": {
+   "rate": 0.6111,
+   "ci": [
+    0.3056,
+    0.8611
+   ],
+   "n": 36
+  },
+  "change_sensitivity_raw": {
+   "rate": 1.0,
+   "ci": [
+    1.0,
+    1.0
+   ],
+   "n": 36
+  },
+  "change_sensitivity_projection": {
+   "rate": 0.8333,
+   "ci": [
+    0.5556,
+    1.0
+   ],
+   "n": 36
+  },
+  "clean_false_alert_raw": {
+   "rate": 0.1667,
+   "ci": [
+    0.0278,
+    0.3889
+   ],
+   "n": 36
+  },
+  "clean_false_alert_projection": {
+   "rate": 0.3056,
+   "ci": [
+    0.1111,
+    0.5
+   ],
+   "n": 36
+  }
+ },
+ "results": {
+  "session": {
+   "B0": {
+    "clean": {
+     "rate": 0.1667,
+     "ci": [
+      0.0278,
+      0.3889
+     ],
+     "n": 36
+    },
+    "noise_mix": {
+     "rate": 0.7222,
+     "ci": [
+      0.5556,
+      0.8333
+     ],
+     "n": 36
+    },
+    "pause_change": {
+     "rate": 1.0,
+     "ci": [
+      1.0,
+      1.0
+     ],
+     "n": 36
+    },
+    "noise_20dB": {
+     "rate": 0.6667,
+     "ci": [
+      0.5556,
+      0.8056
+     ],
+     "n": 36
+    },
+    "noise_10dB": {
+     "rate": 0.9444,
+     "ci": [
+      0.8889,
+      1.0
+     ],
+     "n": 36
+    },
+    "noise_5dB": {
+     "rate": 1.0,
+     "ci": [
+      1.0,
+      1.0
+     ],
+     "n": 36
+    },
+    "noise_0dB": {
+     "rate": 1.0,
+     "ci": [
+      1.0,
+      1.0
+     ],
+     "n": 36
+    }
+   },
+   "P1": {
+    "clean": {
+     "rate": 0.3056,
+     "ci": [
+      0.1111,
+      0.5
+     ],
+     "n": 36
+    },
+    "noise_mix": {
+     "rate": 0.4722,
+     "ci": [
+      0.25,
+      0.6674
+     ],
+     "n": 36
+    },
+    "pause_change": {
+     "rate": 0.8333,
+     "ci": [
+      0.5556,
+      1.0
+     ],
+     "n": 36
+    },
+    "noise_20dB": {
+     "rate": 0.5278,
+     "ci": [
+      0.3333,
+      0.7222
+     ],
+     "n": 36
+    },
+    "noise_10dB": {
+     "rate": 0.6111,
+     "ci": [
+      0.3056,
+      0.8611
+     ],
+     "n": 36
+    },
+    "noise_5dB": {
+     "rate": 0.75,
+     "ci": [
+      0.4444,
+      0.9444
+     ],
+     "n": 36
+    },
+    "noise_0dB": {
+     "rate": 0.8611,
+     "ci": [
+      0.6944,
+      0.9722
+     ],
+     "n": 36
+    }
+   },
+   "B1": {
+    "clean": {
+     "rate": 0.25,
+     "ci": [
+      0.1111,
+      0.4167
+     ],
+     "n": 36
+    },
+    "noise_mix": {
+     "rate": 0.3333,
+     "ci": [
+      0.1944,
+      0.5
+     ],
+     "n": 36
+    },
+    "pause_change": {
+     "rate": 0.8333,
+     "ci": [
+      0.5556,
+      1.0
+     ],
+     "n": 36
+    },
+    "noise_20dB": {
+     "rate": 0.3889,
+     "ci": [
+      0.1389,
+      0.6674
+     ],
+     "n": 36
+    },
+    "noise_10dB": {
+     "rate": 0.5833,
+     "ci": [
+      0.3611,
+      0.8056
+     ],
+     "n": 36
+    },
+    "noise_5dB": {
+     "rate": 0.7778,
+     "ci": [
+      0.6389,
+      0.9167
+     ],
+     "n": 36
+    },
+    "noise_0dB": {
+     "rate": 0.9444,
+     "ci": [
+      0.8333,
+      1.0
+     ],
+     "n": 36
+    }
+   }
+  },
+  "window": {
+   "B0": {
+    "clean": {
+     "rate": 0.2037,
+     "ci": [
+      0.1296,
+      0.2685
+     ],
+     "n": 108
+    },
+    "noise_mix": {
+     "rate": 0.6111,
+     "ci": [
+      0.4352,
+      0.7778
+     ],
+     "n": 108
+    },
+    "pause_change": {
+     "rate": 0.9815,
+     "ci": [
+      0.9444,
+      1.0
+     ],
+     "n": 108
+    },
+    "noise_20dB": {
+     "rate": 0.4167,
+     "ci": [
+      0.3056,
+      0.5185
+     ],
+     "n": 108
+    },
+    "noise_10dB": {
+     "rate": 0.787,
+     "ci": [
+      0.6387,
+      0.9074
+     ],
+     "n": 108
+    },
+    "noise_5dB": {
+     "rate": 0.9167,
+     "ci": [
+      0.8704,
+      0.963
+     ],
+     "n": 108
+    },
+    "noise_0dB": {
+     "rate": 0.9537,
+     "ci": [
+      0.9444,
+      0.9722
+     ],
+     "n": 108
+    }
+   },
+   "P1": {
+    "clean": {
+     "rate": 0.3426,
+     "ci": [
+      0.2685,
+      0.4074
+     ],
+     "n": 108
+    },
+    "noise_mix": {
+     "rate": 0.4444,
+     "ci": [
+      0.3333,
+      0.5463
+     ],
+     "n": 108
+    },
+    "pause_change": {
+     "rate": 0.5741,
+     "ci": [
+      0.2778,
+      0.8611
+     ],
+     "n": 108
+    },
+    "noise_20dB": {
+     "rate": 0.3889,
+     "ci": [
+      0.25,
+      0.5
+     ],
+     "n": 108
+    },
+    "noise_10dB": {
+     "rate": 0.4722,
+     "ci": [
+      0.3241,
+      0.6111
+     ],
+     "n": 108
+    },
+    "noise_5dB": {
+     "rate": 0.6852,
+     "ci": [
+      0.4722,
+      0.8148
+     ],
+     "n": 108
+    },
+    "noise_0dB": {
+     "rate": 0.713,
+     "ci": [
+      0.5185,
+      0.8889
+     ],
+     "n": 108
+    }
+   },
+   "B1": {
+    "clean": {
+     "rate": 0.2685,
+     "ci": [
+      0.2037,
+      0.3333
+     ],
+     "n": 108
+    },
+    "noise_mix": {
+     "rate": 0.2778,
+     "ci": [
+      0.213,
+      0.3519
+     ],
+     "n": 108
+    },
+    "pause_change": {
+     "rate": 0.463,
+     "ci": [
+      0.213,
+      0.713
+     ],
+     "n": 108
+    },
+    "noise_20dB": {
+     "rate": 0.3611,
+     "ci": [
+      0.25,
+      0.4815
+     ],
+     "n": 108
+    },
+    "noise_10dB": {
+     "rate": 0.463,
+     "ci": [
+      0.2963,
+      0.5926
+     ],
+     "n": 108
+    },
+    "noise_5dB": {
+     "rate": 0.6667,
+     "ci": [
+      0.463,
+      0.8241
+     ],
+     "n": 108
+    },
+    "noise_0dB": {
+     "rate": 0.7037,
+     "ci": [
+      0.5093,
+      0.8611
+     ],
+     "n": 108
+    }
+   }
+  },
+  "tau": {
+   "B0": {
+    "session": 0.08520169847905273,
+    "window": 0.18011258238214287
+   },
+   "P1": {
+    "session": 0.20653019407634995,
+    "window": 0.3737848505021057
+   },
+   "B1": {
+    "session": 0.3322688824265125,
+    "window": 0.5491079106241948
+   }
+  }
+ },
+ "conditions": {
+  "clean": "unchanged clean speech (expected ~10% by construction)",
+  "noise_mix": "held-out noise/babble 10-30 dB, sometimes with reverb or mic coloring",
+  "noise_20dB": "held-out noise or babble at 20 dB SNR, additive only",
+  "noise_10dB": "held-out noise or babble at 10 dB SNR, additive only",
+  "noise_5dB": "held-out noise or babble at 5 dB SNR, additive only",
+  "noise_0dB": "held-out noise or babble at 0 dB SNR, additive only",
+  "pause_change": "SYNTHETIC controlled change: room-tone pauses inserted after each speech run"
+ },
+ "meta": {
+  "wavlm_layer": 6,
+  "eval_speakers": 6,
+  "train_speakers_for_boundary": 18,
+  "session_windows": 3,
+  "boundary_quantile": 0.9,
+  "distance": "cosine",
+  "bootstrap": "2000 resamples over evaluation speakers",
+  "models": [
+   "B0",
+   "P1",
+   "B1"
+  ]
+ },
+ "limitations": [
+  "Small: 6 held-out speakers (Androids interview speech, Italian).",
+  "The speech change is synthetic (inserted pauses), not real slower or flatter delivery.",
+  "Leave-one-session-out pseudo-sessions come from one interview: same day, same room. Real day-to-day variation is larger, so these false-alert rates are a lower bound.",
+  "Speech-change sensitivity says nothing about detecting any health condition."
+ ]
+}
