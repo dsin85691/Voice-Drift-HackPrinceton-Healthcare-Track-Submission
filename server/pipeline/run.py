@@ -159,7 +159,7 @@ class Runtime:
                 a = self.window_analysis(s, pid, sig, q, emb, iv)
                 if name == "clean":   # same interval, outlined only: no noise was added to this version
                     a["interventions"] = [{**w, "type": "reference_interval_no_noise"} for w in a["interventions"]]
-                out[name] = a
+                out[name] = windows.contract(a, "controlled_experiment")
         return out
 
     def _process(self, cid, pid, audio_path, emit, lat, t_start, ms, interventions=None):
@@ -169,7 +169,7 @@ class Runtime:
         dur = len(x) / decode.SR
         q = quality.assess(x, cfg)
         if dur < cfg.audio["min_s"]:
-            q = quality.Quality("REJECT", q.speech_s, q.snr_db, q.clipping, ["not enough speech"], q.speech_mask)
+            q = quality.Quality("REJECT", q.speech_s, q.snr_db, q.clipping, ["recording too short"], q.speech_mask)
         elif dur > cfg.audio["max_s"]:
             q = quality.Quality("REJECT", q.speech_s, q.snr_db, q.clipping, ["recording too long"], q.speech_mask)
         lat["decode"] = ms(t)

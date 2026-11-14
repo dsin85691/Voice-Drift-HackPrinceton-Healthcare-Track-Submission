@@ -13,3 +13,5 @@ feats/
 androids*/
 artifacts/
 voice_drift.db
+demo/
+results/demo_snapshot.json

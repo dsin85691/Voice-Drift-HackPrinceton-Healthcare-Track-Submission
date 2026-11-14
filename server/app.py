@@ -17,6 +17,7 @@ from sqlmodel import select
 
 from . import scoring, store
 from .config import ROOT, get_config
+from .pipeline import drift as drift_mod
 from .pipeline.run import Runtime
 from .seed import load_scenario
 
@@ -55,6 +56,13 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
 
     app = FastAPI(title="Voice Drift Monitor", lifespan=lifespan)
     rt = lambda: holder["rt"]
+
+    def drift_space(simulated: bool):
+        """(head, raw) drift models: the fallback space for SIMULATED data, the loaded model for real recordings."""
+        if simulated:
+            fb = drift_mod.fallback_model()
+            return fb, fb
+        return rt().dm, rt().dm_raw
     app.state.holder = holder
 
     # ------------------------------------------------------------------ health
@@ -158,8 +166,12 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 if any(a.kind == "SAFETY" for a in open_alerts):
                     status = "SAFETY"
                 out.append({"id": p.id, "display_name": p.display_name, "simulated": p.simulated, "status": status,
+                            "data_mode": "synthetic_demo" if p.simulated else "real_recording",
                             "last_checkin": last.created_at.isoformat() + "Z" if last else None,
-                            "open_alerts": len(open_alerts), "checkins": len(cks)})
+                            "last_quality": (last.quality or {}).get("verdict") if last else None,
+                            "open_alerts": len(open_alerts), "checkins": len(cks),
+                            "valid_checkins": sum(1 for c in cks if (c.quality or {}).get("verdict") in ("PASS", "WARN")
+                                                  and c.status != "SAFETY")})
         out.sort(key=lambda r: (SEVERITY.get(r["status"], 9), r["display_name"]))
         return out
 
@@ -184,13 +196,18 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                                                       "summary", "simulated", "transcript", "safety")})
                 rows[-1]["acted"] = (c.extra or {}).get("acted", False)
                 rows[-1]["environment"] = (c.extra or {}).get("environment")
-            tau = rt().dm.tau
+                rows[-1]["data_mode"] = "synthetic_demo" if (c.extra or {}).get("simulated") else "real_recording"
+                rows[-1]["baseline_progress"] = (c.extra or {}).get("baseline_progress")
+            tau = (drift_space(p.simulated)[0]).tau
             baseline = None
             if bl and bl.frozen_at:
                 baseline = {"n": bl.n, "frozen_at": bl.frozen_at.isoformat() + "Z", "timing_mu": bl.timing_mu,
                             "timing_sigma": bl.timing_sigma, "tau": tau}
-            return {"patient": {"id": p.id, "display_name": p.display_name, "simulated": p.simulated},
+            return {"patient": {"id": p.id, "display_name": p.display_name, "simulated": p.simulated,
+                                "data_mode": "synthetic_demo" if p.simulated else "real_recording"},
                     "baseline": baseline, "tau": tau, "checkins": rows,
+                    "baseline_n_required": int(get_config().drift["baseline_n"]),
+                    "drift_level": "session",
                     "alerts": [{"id": a.id, "checkin_id": a.checkin_id, "kind": a.kind,
                                 "created_at": a.created_at.isoformat() + "Z", "acked_by": a.acked_by,
                                 "acked_at": a.acked_at.isoformat() + "Z" if a.acked_at else None,
@@ -220,7 +237,8 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         names = {"stable": ["stable"], "drift": ["drift"], "all": ["stable", "drift"], "blank": []}
         if body.scenario not in names:
             raise HTTPException(422, "scenario must be stable|drift|all|blank")
-        done = [load_scenario(n, r.dm) for n in names[body.scenario]]
+        # simulated scenarios live in the fallback drift space they were generated in (never the loaded model's)
+        done = [load_scenario(n, drift_space(True)[0]) for n in names[body.scenario]]
         if body.scenario in ("blank", "all"):
             store.purge_patient("p_demo")
             with store.session() as s:
@@ -241,9 +259,11 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             wa = (ck.extra or {}).get("window_analysis")
             if not wa:
                 raise HTTPException(404, "no window analysis for this check-in (seeded or recorded before the feature)")
+            from .pipeline.windows import contract
+            sim = (ck.extra or {}).get("simulated", False)
             return {"checkin_id": cid, "patient_id": ck.patient_id, "mode": "live_recording",
-                    "simulated": (ck.extra or {}).get("simulated", False),
-                    "versions": ck.versions, **wa}
+                    "simulated": sim, "created_at": ck.created_at.isoformat() + "Z",
+                    "versions": ck.versions, **contract(wa, "synthetic_demo" if sim else "real_recording")}
 
     @app.post("/api/demo/replay")
     async def demo_replay(patient_id: str = Form(...), audio: UploadFile = File(...),
@@ -278,6 +298,48 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                     p.unlink(missing_ok=True)
             raise HTTPException(422, f"replay failed: {e}") from e
 
+    @app.get("/api/results")
+    def results():
+        """Evidence for the Results/Home pages. Nothing here is computed in the browser or invented: the aggregate
+        numbers come from research/lite/aggregate.py, the demo from the last real one-click run."""
+        cfg = get_config()
+        def load(key):
+            p = ROOT / cfg.results[key]
+            return json.loads(p.read_text()) if p.exists() else None
+        d = cfg.demo
+        clip = ROOT / d["clip"]
+        prof_ready = False
+        with store.session() as s:
+            bl = s.get(store.Baseline, d["profile"])
+            prof_ready = bool(bl and bl.frozen_at)
+        return {"aggregate": load("aggregate"), "demo_snapshot": load("demo_snapshot"),
+                "demo": {"clip_present": clip.exists(), "profile": d["profile"], "profile_baseline_ready": prof_ready,
+                         "noise": d["noise"], "snr_db": d["snr_db"], "start_s": d["start_s"], "end_s": d["end_s"]},
+                "model": rt().acoustic.encoder_name,
+                "team": list((get_config().get("about") or {}).get("team") or [])}
+
+    @app.post("/api/demo/run")
+    async def demo_run():
+        """One click: the bundled clip, analysed clean and with the configured noise interval, against the configured
+        profile's baseline. Same code path as the Replay lab. The last run is saved as a snapshot (real output)."""
+        import shutil
+        r, d = rt(), get_config().demo
+        clip = ROOT / d["clip"]
+        if not clip.exists():
+            raise HTTPException(409, f"no demo clip at {d['clip']}: add a consented 40-60 s recording there")
+        tmp = r.tmp / f"{store.new_id('demo')}{clip.suffix}"
+        shutil.copyfile(clip, tmp)                      # replay deletes its input; never touch the bundled file
+        loop = asyncio.get_running_loop()
+        out = await loop.run_in_executor(None, lambda: r.replay(
+            d["profile"], tmp, kind=d["noise"], start_s=float(d["start_s"]), end_s=float(d["end_s"]),
+            snr_db=float(d["snr_db"]), seed=int(d["seed"])))
+        out["ran_at"] = store.utcnow().isoformat() + "Z"
+        out["model"] = r.acoustic.encoder_name
+        snap = ROOT / get_config().results["demo_snapshot"]
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        snap.write_text(json.dumps(out))
+        return out
+
     @app.post("/api/demo/compare")
     def demo_compare(body: CompareBody):
         r = rt()
@@ -287,7 +349,8 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 raise HTTPException(404, "unknown check-in")
             if ck.status == "SAFETY":
                 raise HTTPException(409, "no scores for safety check-ins")
-            return scoring.compare_raw_vs_head(s, ck, r.dm, r.dm_raw)
+            dm, dmr = drift_space((ck.extra or {}).get("simulated", False))
+            return scoring.compare_raw_vs_head(s, ck, dm, dmr)
 
     # ------------------------------------------------------------------ frontend
     web = ROOT / "web"

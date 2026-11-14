@@ -108,10 +108,14 @@ def assess(x: np.ndarray, cfg) -> Quality:
     return Quality(verdict, speech_s, snr, clipping, rej or warn, mask)
 
 
-PATIENT_MESSAGES = {
-    "not enough speech": "We couldn't hear enough speech - try speaking for the full minute.",
-    "too much background noise": "Too much background noise - try a quieter spot.",
-    "audio is distorted (too loud)": "The recording was too loud - move the microphone back a little.",
+PATIENT_MESSAGES = {   # actionable, non-alarming (NHS error-message style); never about the person's health
+    "not enough speech": "We couldn't detect enough speech. Check your microphone and try again.",
+    "recording too short": "The recording was too short for analysis. Please record for at least 20 seconds.",
+    "recording too long": "The recording was longer than 90 seconds. Please keep it to about a minute.",
+    "too much background noise": "Recording quality was insufficient for this comparison. Try again somewhere quieter.",
+    "audio is distorted (too loud)": "The audio level was too high and parts may be distorted. Move the microphone back a little.",
+    "unreadable audio": "We couldn't read this recording. It was not saved; please record again.",
+    "processing error": "Something went wrong while analysing this recording. It was not analysed; please try again.",
 }
 
 

@@ -48,6 +48,13 @@ def load_drift_model(raw: bool = False) -> DriftModel:
             sp = np.full(k, float(sp))
         return DriftModel(k, float(dc["tau"]), sp, pz["mean"], pz["components"][:k],
                           version=chosen.name, layer=dc.get("layer"), meta=dc)
+    return fallback_model()
+
+
+def fallback_model() -> DriftModel:
+    """Config-default drift space (no PCA). The SIMULATED seed scenarios are generated in this space, so they must
+    always be scored with it, whatever trained model is loaded for live recordings."""
+    d = get_config().drift
     k = int(d["k"])
     return DriftModel(k, float(d["tau"]), np.full(k, float(d["sigma_pop"])), None, None)
 

@@ -3,19 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Voice Drift Monitor</title>
+  <meta name="color-scheme" content="light">
+  <title>Voice Drift</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <header>
-    <a class="brand" href="#/">Voice Drift Monitor</a>
-    <nav>
-      <a href="#/" data-nav="checkin">Check-in</a>
-      <a href="#/clinician" data-nav="clinician">Clinician</a>
-    </nav>
-  </header>
-  <main id="app" aria-live="polite"></main>
-  <footer>Screening and monitoring aid &mdash; not a diagnosis. Simulated or acted data is labeled &ldquo;simulated&rdquo;.</footer>
+  <a class="skip" href="#app">Skip to main content</a>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Main navigation">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Voice Drift</span></div>
+      <nav id="sidenav"></nav>
+      <div class="side-foot small" id="sidefoot"></div>
+    </aside>
+    <div class="content">
+      <header class="topbar" id="topbar"></header>
+      <main id="app" tabindex="-1"></main>
+      <footer class="foot small">Research prototype &middot; Screening and monitoring aid &mdash; not a diagnosis.
+        Measurements describe speech and recording conditions, not health.</footer>
+    </div>
+  </div>
+  <nav class="bottomnav" id="bottomnav" aria-label="Main navigation"></nav>
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>

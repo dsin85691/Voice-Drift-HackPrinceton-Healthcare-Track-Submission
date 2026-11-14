@@ -50,7 +50,8 @@ def cosine_distance(A: np.ndarray, mu: np.ndarray) -> np.ndarray:
 
 
 def envelope(x: np.ndarray, mask: np.ndarray | None, hz: int = ENV_HZ) -> dict:
-    """Coarse amplitude envelope (dBFS RMS) + speech flags at `hz`. ~10 numbers/s: cannot be turned back into audio."""
+    """Coarse amplitude envelope (dBFS RMS) + speech flags at `hz`: a loudness summary of ~10 numbers/s, not audio.
+    (No claim is made that derived summaries are anonymous; they are stored only on this machine.)"""
     step = SR // hz
     n = len(x) // step
     fr = x[: n * step].reshape(n, step) if n else np.zeros((0, step))
@@ -175,6 +176,7 @@ def analyze(*, x: np.ndarray, quality, emb, baseline: list, encoder: str, wcfg: 
                                 "re-record the baseline" if len(baseline) >= baseline_n else "")
         return _finish(out, "A")
     usable = usable[:baseline_n]
+    out["baseline_version"] = hashlib.sha1(("|".join(c.id for c in usable) + encoder).encode()).hexdigest()[:10]
     P, R = [], []
     for c in usable:                      # drop baseline windows that failed their own window quality gate
         p, r = blob_to_mat(c.window_vecs), blob_to_mat(c.window_vecs_raw)
@@ -210,6 +212,38 @@ def analyze(*, x: np.ndarray, quality, emb, baseline: list, encoder: str, wcfg: 
     if not cal:
         return _finish(out, "B")
     return _finish(out, "E" if any(w["quality"] == "REJECT" for w in wins) else "C")
+
+
+DATA_MODES = ("real_recording", "controlled_experiment", "synthetic_demo")
+
+
+def describe_models(encoder: str) -> dict:
+    """What is actually being compared, in plain terms (UI spec section 7 'models')."""
+    if not encoder or "spectral-fallback" in encoder:
+        return {"encoder": "spectral features (fallback: no trained artifacts loaded)",
+                "projection": "noise-floor subtraction (classical method, not a trained projection)",
+                "projection_trained": False}
+    head = encoder.split("+", 1)[1] if "+" in encoder else "projection"
+    return {"encoder": "wavlm-base (frozen)", "projection": head, "projection_trained": True}
+
+
+def contract(a: dict, data_mode: str) -> dict:
+    """API view of a window analysis (UI spec section 7.1): adds data_mode, baseline/calibration/models objects and
+    per-window `valid`. Additive: the original fields stay for existing callers."""
+    assert data_mode in DATA_MODES, data_mode
+    cal = a.get("calibration") or {}
+    return {**a,
+            "data_mode": data_mode,
+            "baseline": {"ready": a.get("baseline_ready", False), "version": a.get("baseline_version"),
+                         "progress": a.get("baseline_progress")},
+            "calibration": {"ready": a.get("window_calibration_ready", False), "version": cal.get("version"),
+                            "raw_threshold": a.get("raw_threshold"), "projected_threshold": a.get("projected_threshold"),
+                            "source": cal.get("source"), "metric": cal.get("metric", "cosine"),
+                            "quantile": cal.get("quantile"), "level": "window"},
+            "models": describe_models(a.get("encoder", "")),
+            "remainder_rule": "8 s windows; a final remainder of 4-8 s is analysed as a shorter window "
+                              "(same rule as training), shorter remainders are dropped",
+            "windows": [{**w, "valid": w.get("quality") != "REJECT"} for w in a.get("windows", [])]}
 
 
 def _finish(out: dict, state: str) -> dict:

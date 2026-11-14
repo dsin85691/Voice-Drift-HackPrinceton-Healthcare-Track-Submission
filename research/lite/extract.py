@@ -81,6 +81,26 @@ def make_views(seg: np.ndarray, window_id: str, idx: dict) -> tuple[list[np.ndar
     return views, labels
 
 
+SWEEP_SNRS = (20, 10, 5, 0)
+
+
+def sweep_views(seg: np.ndarray, window_id: str, idx: dict) -> tuple[list[np.ndarray], list[str]]:
+    """L2 (aggregate experiment): ADDITIVE noise only, at fixed SNRs, from HELD-OUT noise files (noise or babble,
+    seeded per window and level). Same clean speech in every view, so the only change is the added noise."""
+    from ..augment import _load
+
+    views, labels = [], []
+    for i, snr in enumerate(SWEEP_SNRS):
+        rng = random.Random(seed_for(window_id, 200 + i))
+        if rng.random() < 0.5:
+            n, kind = _load(rng.choice(idx["noise_test"]), len(seg), rng, "cpu").numpy(), "noise"
+        else:
+            n = sum(_load(rng.choice(idx["speech_test"]), len(seg), rng, "cpu").numpy() for _ in range(rng.randint(3, 5)))
+            kind = "babble"
+        views.append(_mix(seg, n, snr)); labels.append(f"{kind}@{snr}dB")
+    return views, labels
+
+
 def main() -> None:  # pragma: no cover - Colab entry point
     import pandas as pd
     import torch
@@ -98,6 +118,8 @@ def main() -> None:  # pragma: no cover - Colab entry point
     ap.add_argument("--batch-windows", type=int, default=12, help="windows per forward pass (x5 views)")
     ap.add_argument("--path-map", action="append", default=[], metavar="OLD=NEW")
     ap.add_argument("--io-only", action="store_true", help="time the data path on CPU, no model, no ledger")
+    ap.add_argument("--noise-sweep", action="store_true",
+                    help="stage L2: held-out (eval) speakers only, additive held-out noise at 20/10/5/0 dB")
     a = ap.parse_args()
 
     remap = [kv.split("=", 1) for kv in a.path_map]
@@ -105,22 +127,27 @@ def main() -> None:  # pragma: no cover - Colab entry point
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     sel = select_windows(pd.read_parquet(a.manifest), a.speakers, a.per_speaker)
     sel["src_file"] = sel.src_file.map(fix)
+    stage, prefix = ("L2", "L2") if a.noise_sweep else ("L1", "L1")
+    if a.noise_sweep:
+        sel = sel[sel.split == "val"].reset_index(drop=True)      # same seeded split as L1: eval speakers only
     idx = {k: [fix(p) for p in v] for k, v in json.load(open(a.noise_index)).items()}
     bad = [p for p in sel.src_file.drop_duplicates().tolist()[:20] + sum(idx.values(), [])[:20] if not Path(p).exists()]
     if bad:
         raise SystemExit(f"input files not found, e.g. {bad[0]} (check --path-map / local copy)")
-    sel.to_parquet(out / "selection.parquet")
-    print(f"{len(sel)} windows | {sel.speaker_id.nunique()} speakers | val speakers "
-          f"{sel[sel.split == 'val'].speaker_id.nunique()} | {len(sel) * len(VIEWS)} clips", flush=True)
+    if not a.noise_sweep:
+        sel.to_parquet(out / "selection.parquet")
+    nviews = len(SWEEP_SNRS) if a.noise_sweep else len(VIEWS)
+    print(f"[{stage}] {len(sel)} windows | {sel.speaker_id.nunique()} speakers | val speakers "
+          f"{sel[sel.split == 'val'].speaker_id.nunique()} | {len(sel) * nviews} clips", flush=True)
     dev = "cpu" if a.io_only else "cuda"
     done, t0 = 0, time.time()
-    with (nullcontext() if a.io_only else budget.stage("L1", out.parent)):
+    with (nullcontext() if a.io_only else budget.stage(stage, out.parent)):
         if not a.io_only:
             assert torch.cuda.is_available(), "no GPU: switch the runtime to an L4/T4 first"
             print("GPU:", torch.cuda.get_device_name(0), flush=True)
             model = load_wavlm(device=dev)
         for s0 in range(0, len(sel), a.shard):
-            sid = f"L1_{s0 // a.shard:04d}"
+            sid = f"{prefix}_{s0 // a.shard:04d}"
             if not a.io_only and shard_done(out, sid):
                 print(f"{sid}: already complete, skipping", flush=True); continue
             chunk = sel.iloc[s0:s0 + a.shard]
@@ -130,11 +157,16 @@ def main() -> None:  # pragma: no cover - Colab entry point
                 for _, r in chunk.iloc[b0:b0 + a.batch_windows].iterrows():
                     seg = read_16k(r.src_file, r.t0, r.t1)
                     tv, tm = acoustic_targets(seg)
-                    views, labels = make_views(seg, r.window_id, idx)
+                    if a.noise_sweep:
+                        views, labels = sweep_views(seg, r.window_id, idx)
+                        names = [f"noise{snr}" for snr in SWEEP_SNRS]
+                    else:
+                        views, labels = make_views(seg, r.window_id, idx)
+                        names = list(VIEWS)
                     for vi, (v, lab) in enumerate(zip(views, labels)):
                         wavs.append(v)
                         rows.append({"window_id": r.window_id, "speaker_id": r.speaker_id, "split": r.split,
-                                     "view": VIEWS[vi], "view_detail": lab, "seconds": round(len(v) / SR, 2),
+                                     "view": names[vi], "view_detail": lab, "seconds": round(len(v) / SR, 2),
                                      **{f"t_{k}": float(tv[i]) for i, k in enumerate(TARGETS)},
                                      **{f"m_{k}": bool(tm[i]) for i, k in enumerate(TARGETS)}})
                 if not a.io_only:

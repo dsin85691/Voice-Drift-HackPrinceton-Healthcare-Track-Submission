@@ -54,9 +54,12 @@ def test_reject_noisy_and_too_short(client, wav_bytes):
     r = wait_result(client, cid)
     assert r["quality"]["verdict"] == "REJECT" and r["drift"] is None
     cid = post(client, "p_live", wav_bytes(seconds=8))
-    assert wait_result(client, cid)["quality"]["verdict"] == "REJECT"
+    assert wait_result(client, cid)["quality"]["reasons"] == ["recording too short"]
     pv = client.get(f"/api/checkins/{cid}", params={"role": "patient"}).json()
-    assert pv["message"]
+    assert pv["outcome"] == "rejected" and pv["message"].startswith("The recording was too short")
+    shown = json.dumps({k: v for k, v in pv.items() if k != "disclaimer"}).lower()
+    for word in ("abnormal", "risk", "depress", "diagnos"):           # never health language on the result screen
+        assert word not in shown
 
 
 def test_audio_deleted_on_error_path_100_checkins(client):
@@ -64,6 +67,8 @@ def test_audio_deleted_on_error_path_100_checkins(client):
     for cid in ids:
         r = wait_result(client, cid, timeout=60)
         assert r["quality"]["verdict"] == "REJECT"
+    pv = client.get(f"/api/checkins/{ids[0]}", params={"role": "patient"}).json()
+    assert pv["outcome"] == "failed" and "not saved" in pv["message"]
     assert list(client.tmp_path.iterdir()) == []
 
 

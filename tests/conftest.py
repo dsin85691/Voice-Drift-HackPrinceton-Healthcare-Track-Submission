@@ -37,6 +37,8 @@ def tmp_env(tmp_path, monkeypatch):
     monkeypatch.setitem(cfg["server"], "tmp_dir", str(tmp_path / "tmp"))
     url = f"sqlite:///{(tmp_path / 't.db').as_posix()}"
     monkeypatch.setitem(cfg["server"], "db_url", url)
+    # never depend on whatever trained artifacts happen to be on this machine (artifacts/ is git-ignored)
+    monkeypatch.setitem(cfg["artifacts"], "dir", str(tmp_path / "no_artifacts"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     store.reset_engine(url)
     return tmp_path

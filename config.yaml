@@ -64,3 +64,19 @@ llm:
 
 safety:
   lexicon: safety/lexicon.yaml
+
+results:
+  aggregate: results/aggregate.json         # written by: python -m research.lite.aggregate
+  demo_snapshot: results/demo_snapshot.json # written by the one-click demo (last real run)
+
+about:
+  team: []                                  # e.g. ["Name One", "Name Two"]: shown on About & Privacy
+
+demo:                                       # one-click demo on the Results page
+  clip: demo/clip.wav                       # a CONSENTED team-member recording (40-60 s); git-ignored
+  profile: p_demo                           # whose baseline it is compared against (same speaker as the clip!)
+  noise: babble_self
+  snr_db: 10
+  start_s: 24
+  end_s: 48
+  seed: 0

@@ -172,7 +172,14 @@ def test_live_window_analysis_states_over_a_baseline(client, wav_bytes):
     assert r["drift"]["tau"] == pytest.approx(get_config().drift["tau"], rel=1e-3)
     # patient never sees any of it
     pv = client.get(f"/api/checkins/{cid}", params={"role": "patient"}).json()
-    assert "has_window_analysis" not in pv and "windows" not in json.dumps(pv)
+    # the result screen carries no scores, only a pointer that an analysis exists (self-monitoring UI decision)
+    assert pv["outcome"] == "accepted" and pv["has_window_analysis"] is True
+    assert "windows" not in json.dumps(pv) and "drift" not in pv
+    # the API view carries the UI-spec contract
+    a2 = client.get(f"/api/checkins/{cid}/windows").json()
+    assert a2["data_mode"] == "real_recording" and a2["calibration"]["level"] == "window"
+    assert a2["calibration"]["ready"] and a2["calibration"]["raw_threshold"] > 0 and a2["baseline"]["version"]
+    assert all("valid" in w for w in a2["windows"]) and a2["models"]["projection_trained"] is False
     # malformed interventions are ignored, never fatal
     r = client.post("/api/patients/p_w/checkins", files={"audio": ("a.wav", wav_bytes(seconds=40, seed=11), "audio/wav")},
                     data={"interventions": "{not json"})
@@ -194,6 +201,7 @@ def test_replay_is_deterministic_and_stores_nothing(client, wav_bytes):
     j1, j2 = r1.json(), r2.json()
     assert j1["noisy"]["windows"] == j2["noisy"]["windows"]                       # reproducible
     assert j1["clean"]["interventions"][0]["type"] == "reference_interval_no_noise"
+    assert j1["clean"]["data_mode"] == j1["noisy"]["data_mode"] == "controlled_experiment"
     # windows that end before the noise starts must be IDENTICAL in both versions (windows are independent)
     for cw_, nw_ in zip(j1["clean"]["windows"], j1["noisy"]["windows"]):
         if nw_["end_seconds"] <= 16:

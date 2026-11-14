@@ -181,6 +181,11 @@ def patient_view(r: dict) -> dict:
                        if q.get("verdict") == "REJECT" else ""},
            "baseline_progress": r.get("baseline_progress") if r["status"] == "BASELINE" else None,
            "simulated": r.get("simulated", False), "disclaimer": r["disclaimer"]}
+    reasons = q.get("reasons", [])
+    out["outcome"] = ("safety" if r["status"] == "SAFETY" else
+                      "failed" if any(x in ("processing error", "unreadable audio") for x in reasons) else
+                      "rejected" if q.get("verdict") == "REJECT" else "accepted")
+    out["has_window_analysis"] = r.get("has_window_analysis", False) if out["outcome"] == "accepted" else False
     if r["status"] == "SAFETY":
         out["safety"] = {"triggered": True,
                          "message": "If you are thinking about harming yourself, you are not alone. "
