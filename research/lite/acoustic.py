@@ -100,6 +100,43 @@ def insert_pauses(x: np.ndarray, extra_s: float = 0.4) -> np.ndarray:
     return np.concatenate(out).astype(np.float32)
 
 
+def time_stretch(x: np.ndarray, factor: float = 1.2, frame: int = 640, hop: int = 320, tol: int = 160) -> np.ndarray:
+    """Slower delivery WITHOUT a pitch change (WSOLA): output is `factor` x longer (1.2 = 20% slower), the
+    fundamental frequency is unchanged. Each output frame is the input segment, within +-tol samples of its nominal
+    position, that best continues the previous one (max cross-correlation), Hann-windowed and overlap-added.
+    Same speaker, same words, same room; only the speaking rate changes. Labelled synthetic in every report."""
+    x = np.asarray(x, np.float64)
+    if factor == 1.0 or len(x) < frame + 2 * tol:
+        return x.astype(np.float32)
+    ha = hop / factor
+    n_out = int(len(x) * factor)
+    xp = np.pad(x, (tol, frame + tol + hop))
+    win = np.hanning(frame)
+    out = np.zeros(n_out + frame + hop)
+    norm = np.zeros_like(out)
+    prev = None
+    for k in range(n_out // hop + 1):
+        nominal = int(round(k * ha)) + tol                       # index into the padded signal
+        if prev is None:
+            pos = nominal
+        else:
+            target = xp[prev + hop: prev + hop + frame]          # natural continuation of the last frame
+            lo, hi = max(0, nominal - tol), min(len(xp) - frame, nominal + tol)
+            if hi <= lo:
+                break
+            seg = xp[lo: hi + frame]
+            c = np.correlate(seg, target, mode="valid")
+            pos = lo + int(np.argmax(c))
+        o = k * hop
+        if o + frame > len(out):
+            break
+        out[o:o + frame] += win * xp[pos:pos + frame]
+        norm[o:o + frame] += win
+        prev = pos
+    y = out[:n_out] / np.maximum(norm[:n_out], 1e-3)
+    return y.astype(np.float32)
+
+
 def mic_sim(x: np.ndarray, rng, max_db: float = 6.0) -> np.ndarray:
     """Mild random microphone frequency response: smooth gain curve through 6 log-spaced control points
     (+-max_db), applied in the frequency domain. Length and timing are unchanged."""

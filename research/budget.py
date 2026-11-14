@@ -31,7 +31,9 @@ RULES = {"G0": (0.25, 0.25), "G1": (0.75, 1.0), "G2": (0.5, 0.75), "G3": (0.25, 
          # L1: lightweight projection experiment extraction (~2,400 clips): projection-head spec v0.1
          "L1": (0.25, 0.5),
          # L2: aggregate-experiment noise sweep (eval speakers only, ~480 clips)
-         "L2": (0.1, 0.25)}
+         "L2": (0.1, 0.25),
+         # L3: evidence-spec change conditions (slower delivery, change + noise), eval speakers only, ~360 clips
+         "L3": (0.1, 0.25)}
 FIELDS = ["stage", "start_utc", "end_utc", "gpu_name", "last_seen_utc", "note"]
 _lock = threading.Lock()
 

@@ -50,6 +50,7 @@ const STATUS = {
   AMBER: ["Different from your baseline", "amber", "info"],
   RED: ["Sustained difference from baseline", "navy", "info"],
   SAFETY: ["Support resources shown", "navy", "shield"],
+  INCOMPATIBLE: ["Not compared (different speaking task)", "gray", "info"],
 };
 const QUALITY = { PASS: ["Good recording", "teal", "check"], WARN: ["Usable, some background noise", "amber", "info"], REJECT: ["Not usable", "gray", "x"] };
 const MODES = { real_recording: "Real recording", controlled_experiment: "Controlled experiment", synthetic_demo: "Synthetic demo data" };
@@ -155,6 +156,7 @@ async function viewHome() {
     <p class="lead" style="max-width:78ch"><strong>Changes in how someone speaks can be tracked between clinic visits with a one-minute recording at home.</strong>
       But a noisy kitchen or a new phone can change a voice recording as much as the speaker does, so Voice Drift checks whether a change comes from the speaker or from the room.</p>
     ${resultsVisible() ? headlineHtml(res.aggregate) : ""}
+    ${tl && tl.repeat_requested ? `<div class="callout info" style="margin:0 0 20px"><h3>Repeat check-in requested</h3><p class="small">Your reviewer asked for another check-in using the same reading passage. This is a request for another recording, not a treatment instruction.</p><a class="btn primary" href="#/checkin">${icon("mic")}Start check-in</a></div>` : ""}
     ${synthetic ? `<div class="callout caution" style="margin:16px 0 20px"><h3>Synthetic demo profile</h3><p class="small">Every value on this profile is generated for the demo; the last two days simulate deliberately slower, flatter speech. Switch profile at the top to see real recordings.</p></div>` : ""}
     <div class="grid two">
       <section class="card hero stack" aria-labelledby="ci-h">
@@ -198,6 +200,12 @@ const ci = (r) => (r && r.ci && r.ci[0] != null ? `${Math.round(r.ci[0] * 100)}�
 function headlineHtml(agg) {
   const h = agg && agg.headline;
   if (!h) return `<div class="card" style="margin:6px 0 20px"><p class="small muted" style="margin:0">${icon("info", 16)} Headline result pending: the aggregate experiment hasn't been run yet. <a href="#/results">How it is measured &rarr;</a></p></div>`;
+  if (isV2(agg)) {
+    const pd = h.primary_difference;
+    return `<section class="card" style="margin:6px 0 20px" aria-label="Headline result">
+      <p style="margin:0;max-width:90ch"><strong>${esc(h.sentence)}</strong></p>
+      <p class="tiny muted" style="margin:8px 0 0">${pd && pd.diff != null ? `Paired difference in false alerts (projection minus raw): ${pts(pd.diff)} points, 95% interval ${pts(pd.ci[0])} to ${pts(pd.ci[1])}${pd.excludes_zero ? "" : ", which includes zero"}. ` : ""}${agg.meta.eval_speakers} held-out speakers, synthetic speech changes. <a href="#/results">Evidence and limits &rarr;</a></p></section>`;
+  }
   return `<section class="card" style="margin:6px 0 20px" aria-label="Headline result"><div class="row" style="align-items:baseline">
       <div><div class="small muted">False alerts when noise is added (unchanged speech)</div>
         <div class="kpi">${pct(h.false_alert_raw)} <small>raw model</small> &rarr; ${pct(h.false_alert_projection)} <small>with the noise-invariant projection</small></div></div>
@@ -255,13 +263,22 @@ function sessionChart(cks, { height = 240 } = {}) {
 
 // ------------------------------------------------------------------ Check-in (patient)
 async function viewCheckin() {
-  const prompt = await api("/prompt").catch(() => ({ text: "Tell me about your day so far." }));
+  const verify = new URLSearchParams(location.hash.split("?")[1] || "").get("verify");
+  let promptId = "standard_reading_v1";
+  if (verify) {   // a repeat must use the original's passage
+    const orig = await api(`/checkins/${encodeURIComponent(verify)}`).catch(() => null);
+    if (orig && orig.protocol) promptId = orig.protocol.prompt_id;
+  }
+  const prompt = await api(`/prompt?prompt_id=${encodeURIComponent(promptId)}`);
+  const reading = prompt.task_type === "read_speech";
   $app.innerHTML = `
-    <h1>Daily voice check-in</h1>
-    <p class="lead">About 1 minute. Speak naturally; there are no right or wrong answers.</p>
+    <h1>${verify ? "Repeat check-in" : "Daily voice check-in"}</h1>
+    ${verify ? `<div class="callout info" style="margin-bottom:16px"><p style="margin:0">Read the <strong>same passage</strong> again, with the same microphone and in the same place if you can. We'll compare this recording with the one you are repeating.</p></div>` : ""}
+    <p class="lead">${reading ? "Read the passage below aloud at your normal pace. It takes about 40 seconds." : "About 1 minute. Speak naturally; there are no right or wrong answers."}</p>
     <div class="grid two">
       <section class="card stack" style="text-align:center;align-items:center;display:flex;flex-direction:column">
-        <p class="prompt"><strong>${esc(prompt.text)}</strong></p>
+        <p class="prompt" style="text-align:left;max-width:60ch;line-height:1.6">${reading ? esc(prompt.text) : `<strong>${esc(prompt.text)}</strong>`}</p>
+        <p class="tiny muted">Passage ${esc(prompt.prompt_id)} &middot; version ${esc(prompt.prompt_version)} &middot; protocol ${esc(prompt.protocol_version)}</p>
         <div class="ring"><svg width="190" height="190" viewBox="0 0 190 190" aria-hidden="true"><circle cx="95" cy="95" r="84" fill="none" stroke="var(--line)" stroke-width="10"/><circle id="arc" cx="95" cy="95" r="84" fill="none" stroke="var(--teal)" stroke-width="10" stroke-linecap="round" stroke-dasharray="527.8" stroke-dashoffset="527.8"/></svg><div class="t" id="clock" aria-hidden="true">1:00</div></div>
         <div class="meter" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="lvlwrap"><div id="lvl"></div></div>
         <p id="hint" class="small" aria-live="polite">&nbsp;</p>
@@ -275,10 +292,10 @@ async function viewCheckin() {
       </section>
       <aside class="card stack">
         <h2>Before you start</h2>
+        <ol class="small">${(prompt.instructions || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ol>
         <ul class="small">
           <li>Find a quiet place, away from TV or conversations.</li>
-          <li>Hold the device about an arm's length away, or use a headset.</li>
-          <li>Speak for up to 60 seconds. You can stop after 20 seconds.</li>
+          <li>You can stop after 20 seconds; most people finish the passage in under a minute.</li>
         </ul>
         <div class="callout info small"><h3>${icon("shield", 16)} Your recording</h3>
           Audio is sent only to this computer's Voice Drift server, analysed there, and the audio file is deleted afterwards.
@@ -356,13 +373,19 @@ async function viewCheckin() {
 
   async function upload(blob) {
     const fd = new FormData();
-    fd.append("audio", blob, "checkin.webm"); fd.append("prompt_id", "default");
+    fd.append("audio", blob, "checkin.webm"); fd.append("prompt_id", prompt.prompt_id);
+    if (verify) fd.append("verification_of", verify);
     const end = +elapsed().toFixed(2);
     marks.forEach((m) => { if (m.end_seconds == null) m.end_seconds = end; });
     if (marks.length) fd.append("interventions", JSON.stringify(marks));
     $app.innerHTML = `<h1>Checking your recording</h1><div class="card"><ul class="steps" id="steps"></ul><p id="pstatus" role="status" class="small muted">Uploading&hellip;</p></div>`;
     try {
       const r = await fetch(`/api/patients/${encodeURIComponent(S.pid)}/checkins`, { method: "POST", body: fd });
+      if (r.status === 409 || r.status === 404) {
+        const j = await r.json().catch(() => ({}));
+        renderOutcome({ outcome: "failed", message: `This repeat couldn't be recorded: ${j.detail || r.status}.` });
+        return;
+      }
       if (!r.ok) throw new Error(r.status);
       watch((await r.json()).checkin_id);
     } catch (e) {
@@ -394,22 +417,100 @@ function renderOutcome(r) {
     return;
   }
   if (r.outcome === "rejected" || r.outcome === "failed") {
-    $app.innerHTML = `<h1>${r.outcome === "failed" ? "This check-in couldn't be analysed" : "Let's try that again"}</h1>
-      <div class="callout caution" role="alert"><h3>${r.outcome === "failed" ? "Something went wrong" : "We couldn't use this recording"}</h3><p>${esc(r.message)}</p></div>
-      <p style="margin-top:16px"><a class="btn primary big" href="#/checkin" onclick="setTimeout(()=>dispatchEvent(new HashChangeEvent('hashchange')))">${icon("mic", 22)}Record again</a></p>`;
+    const again = r.verification_of ? `#/checkin?verify=${encodeURIComponent(r.verification_of)}` : "#/checkin";
+    $app.innerHTML = `<h1>${r.outcome === "failed" ? "This check-in couldn't be analysed" : "Recording quality was insufficient. Please try again."}</h1>
+      <div class="callout caution" role="alert"><h3>${r.outcome === "failed" ? "Something went wrong" : "We couldn't use this recording"}</h3><p>${esc(r.message)}</p>
+        ${r.quality && (r.quality.reason_codes || []).length ? `<p class="tiny muted" style="margin:0">Reason: ${r.quality.reason_codes.map(esc).join(", ")}. This recording was not used for your baseline or any comparison.</p>` : ""}</div>
+      <p style="margin-top:16px"><a class="btn primary big" href="${again}" onclick="setTimeout(()=>dispatchEvent(new HashChangeEvent('hashchange')))">${icon("mic", 22)}Record again</a></p>`;
     return;
   }
   const prog = r.baseline_progress;
   $app.innerHTML = `<h1>${icon("check", 26)} Check-in recorded</h1>
     <div class="card stack">
+      <p class="small">${icon("check", 16)} ${esc((r.quality && r.quality.message) || "Recording quality passed.")}</p>
       <p>${esc(r.message || "")}</p>
       ${prog ? `<div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${prog[1]}" aria-valuenow="${prog[0]}" aria-label="Baseline progress"><div style="width:${(prog[0] / prog[1]) * 100}%"></div></div><p class="small muted">Baseline ${prog[0]} of ${prog[1]}</p>` : ""}
+      <div id="verif"></div>
       <div class="row">
-        ${r.has_window_analysis ? `<a class="btn primary" href="#/analysis/${encodeURIComponent(r.checkin_id)}">${icon("analysis")}View analysis</a>` : ""}
+        ${r.has_window_analysis ? `<a class="btn" href="#/analysis/${encodeURIComponent(r.checkin_id)}">${icon("analysis")}View analysis</a>` : ""}
         <a class="btn" href="#/trends">${icon("trends")}View trends</a><a class="btn" href="#/">Home</a>
       </div>
       ${r.simulated ? '<span class="mode synthetic_demo">Synthetic demo data</span>' : ""}
-    </div>`;
+    </div>
+    ${r.acoustic_features ? `<section class="card stack" style="margin-top:20px">${acousticHtml(r.acoustic_features, r.acoustic_summary)}</section>` : ""}
+    <section class="card stack" style="margin-top:20px">${contextFormHtml(r.context)}</section>`;
+  wireContext(r.checkin_id);
+  api(`/checkins/${encodeURIComponent(r.checkin_id)}/verification`).then((v) => {
+    const el = document.getElementById("verif");
+    if (el) el.innerHTML = verificationHtml(v, r.checkin_id, r.has_window_analysis);
+  }).catch(() => {});
+}
+
+// ------------------------------------------------------------------ F4 acoustic evidence (shared)
+const FEATURE_FMT = { pause_fraction: (v) => `${Math.round(v * 1000) / 10}%`, speaking_rate_wpm: (v) => `${Math.round(v)} wpm`, pitch_variability: (v) => `${fmt(v, 1)} st` };
+const DELTA_FMT = { pause_fraction: (v) => `${v > 0 ? "+" : ""}${Math.round(v * 1000) / 10} points`, speaking_rate_wpm: (v) => `${v > 0 ? "+" : ""}${Math.round(v)} wpm`, pitch_variability: (v) => `${v > 0 ? "+" : ""}${fmt(v, 1)} st` };
+function acousticHtml(F, summary, { heading = "What Changed in Your Speech?" } = {}) {
+  if (!F) return `<h2>${heading}</h2><p class="muted small">No measurements for this check-in.</p>`;
+  const row = (k) => {
+    const f = F[k], ok = f.status === "VALID";
+    const val = (v) => (v == null ? '<span class="muted">unavailable</span>' : FEATURE_FMT[k](v));
+    return `<tr><td>${esc(f.label)}<br><span class="tiny muted">${esc(f.unit)}</span></td><td class="num">${val(f.baseline)}${f.baseline_n ? `<br><span class="tiny muted">mean of ${f.baseline_n}</span>` : ""}</td><td class="num">${val(f.current)}</td>
+      <td class="num">${ok ? `<strong>${DELTA_FMT[k](f.delta)}</strong>${f.relative != null ? `<br><span class="tiny muted">${f.relative > 0 ? "+" : ""}${Math.round(f.relative * 100)}%</span>` : ""}` : `<span class="muted small">${esc((f.reason || f.status).toString())}</span>`}</td></tr>`;
+  };
+  return `<h2>${heading}</h2>
+    ${(summary || []).length ? summary.map((x) => `<p>${esc(x)}</p>`).join("") : '<p class="muted small">No comparable measurement for this check-in.</p>'}
+    <div class="tablewrap"><table><caption class="sr-only">Speech measurements, baseline vs this recording</caption><thead><tr><th>Measurement</th><th class="num">Your baseline</th><th class="num">This recording</th><th class="num">Difference</th></tr></thead>
+      <tbody>${Object.keys(F).map(row).join("")}</tbody></table></div>
+    <p class="tiny muted">Same measurement method for baseline and this recording. Pause time counts gaps of 200 ms or more between stretches of speech. These describe the recording; they are not symptoms and are not shown to explain the overall difference from baseline.</p>`;
+}
+
+// ------------------------------------------------------------------ F3 verification (shared)
+const VRESULT = {
+  REPRODUCED: ["Repeated: both recordings differ from your baseline", "navy"],
+  NOT_REPRODUCED: ["Not repeated: only the first recording differed", "teal"],
+  INCONCLUSIVE: ["Inconclusive", "gray"],
+  UNCALIBRATED: ["Not classified (no calibrated boundary)", "gray"],
+};
+function verificationHtml(v, cid, hasAnalysis) {
+  if (!v) return "";
+  const side = (x, label) => `<tr><td>${label}<br><span class="tiny muted">${fmtDT(x.recorded_at)}</span></td><td>${qualityPill(x.quality)}</td><td class="num">${x.normalized_drift == null ? '<span class="muted">not scored</span>' : `${fmt(x.normalized_drift)} &times;`}</td><td>${x.exceeded == null ? "&ndash;" : x.exceeded ? "Above boundary" : "Within boundary"}</td></tr>`;
+  if (v.repeats && v.repeats.length) {
+    const last = v.repeats[v.repeats.length - 1], res = last.verification || {};
+    const [label, tone] = VRESULT[res.result] || [res.result || "Pending", "gray"];
+    return `<div class="callout info"><h3>Repeat check-in result <span class="pill ${tone}">${esc(label)}</span></h3>
+      <div class="tablewrap"><table><thead><tr><th>Recording</th><th>Quality</th><th class="num">Difference (&times; boundary)</th><th>Session boundary</th></tr></thead><tbody>
+        ${side(v.original, "Original")}${side(last, "Repeat")}</tbody></table></div>
+      <p class="tiny muted" style="margin:6px 0 0">${res.reason ? `Reason: ${esc(res.reason)}. ` : ""}This says whether the measurement repeated under the same conditions. It is not a health assessment, and a same-day repeat counts as one episode, not two.</p></div>`;
+  }
+  const o = v.offer;
+  if (!o || !o.available) return "";
+  return `<div class="callout ${o.kind === "VERIFY" ? "info" : "caution"}"><h3>${esc(o.message)}</h3>
+    ${o.kind === "VERIFY" ? '<p class="small">You can repeat the check-in now with the same passage to see whether the difference repeats.</p>' : ""}
+    <div class="row"><a class="btn primary" href="#/checkin?verify=${encodeURIComponent(cid)}">${icon("mic")}Repeat Check-In</a>
+    <a class="btn" href="${hasAnalysis ? `#/analysis/${encodeURIComponent(cid)}` : "#/trends"}">View Details</a></div></div>`;
+}
+
+// ------------------------------------------------------------------ F5 patient-reported context
+const CONTEXT = [["TIRED", "Feeling tired"], ["COLD_OR_SORE_THROAT", "Cold or sore throat"], ["DIFFERENT_ROOM_OR_MIC", "Different microphone or room"], ["NOTICED_SPEECH_CHANGE", "Noticed a change in how I speak"], ["NONE", "No additional context"]];
+const contextText = (c) => (c && ((c.tags || []).length || c.note) ? [...(c.tags || []).map((t) => (CONTEXT.find(([k]) => k === t) || [t, t])[1]), c.note ? `“${c.note}”` : ""].filter(Boolean).join(", ") : "");
+function contextFormHtml(ctx) {
+  const have = new Set((ctx && ctx.tags) || []);
+  return `<h2>Is there anything that might help explain today's recording?</h2><p class="small muted">Optional. This is saved with the check-in for your reviewer. It doesn't change any measurement.</p>
+    <fieldset style="border:0;padding:0;margin:0"><legend class="sr-only">Context</legend>${CONTEXT.map(([k, l]) => `<label class="row small" style="gap:8px"><input type="checkbox" name="ctx" value="${k}" ${have.has(k) ? "checked" : ""}> ${l}</label>`).join("")}</fieldset>
+    <label for="ctxnote" class="small">Short note (optional)</label><input id="ctxnote" maxlength="300" value="${esc((ctx && ctx.note) || "")}">
+    <div class="row"><button id="ctxsave">Save context</button><span id="ctxmsg" role="status" class="small muted"></span></div>`;
+}
+function wireContext(cid) {
+  const b = document.getElementById("ctxsave");
+  if (!b) return;
+  b.onclick = async () => {
+    const tags = [...document.querySelectorAll('input[name="ctx"]:checked')].map((x) => x.value);
+    const msg = document.getElementById("ctxmsg");
+    try {
+      await api(`/checkins/${encodeURIComponent(cid)}/context`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags, note: document.getElementById("ctxnote").value }) });
+      msg.textContent = "Saved.";
+    } catch (e) { msg.textContent = "Couldn't save (" + e.message + ")."; }
+  };
 }
 
 // ------------------------------------------------------------------ Analysis Lab
@@ -675,13 +776,77 @@ function verdict(h) {
   }
   return s;
 }
-function resultsTable(agg, level) {
-  const R = agg.results[level], models = Object.keys(R);
-  const conds = Object.keys(R[models[0]]);
-  const better = (c) => (c === "pause_change" ? "higher is better" : "lower is better");
-  return `<table><caption class="sr-only">${level}-level rates</caption><thead><tr><th scope="col">Condition</th>${models.map((m) => `<th scope="col" class="num">${m === "B0" ? "Raw WavLM" : m === "P1" ? "Projection (P1)" : "Projection, invariance only (B1)"}</th>`).join("")}</tr></thead><tbody>
-    ${conds.map((c) => `<tr><td>${esc(COND_LABEL(agg, c))}<br><span class="tiny muted">${c === "pause_change" ? "share detected" : "share flagged (false alerts)"}, ${better(c)}</span></td>
-      ${models.map((m) => `<td class="num"><strong>${pct(R[m][c])}</strong><br><span class="tiny muted">${ci(R[m][c])} &middot; n=${R[m][c].n}</span></td>`).join("")}</tr>`).join("")}</tbody></table>`;
+// schema 2 (matched operating point) and schema 1 (train-speaker boundary only) are both readable
+const isV2 = (agg) => !!(agg && agg.schema >= 2);
+const levelRates = (agg, level, op = "matched") => (isV2(agg) ? agg.results[level][op] : agg.results[level]);
+const MODEL_NAME = { B0: "Raw WavLM (B0)", P1: "Projection (P1)", B1: "Projection, invariance only (B1)" };
+const shouldAlert = (agg, c) => (agg.should_alert || ["pause_change"]).includes(c);
+const pts = (x) => (x == null ? "&ndash;" : `${x > 0 ? "+" : ""}${Math.round(x * 100)}`);
+function diffHtml(d) {
+  if (!d || d.diff == null) return "&ndash;";
+  return `<strong>${pts(d.diff)} pts</strong><br><span class="tiny muted">${pts(d.ci[0])} to ${pts(d.ci[1])} &middot; ${d.excludes_zero ? "interval excludes 0" : "interval includes 0"}</span>`;
+}
+function resultsTable(agg, level, { conds = null, op = "matched" } = {}) {
+  const R = levelRates(agg, level, op), models = ["B0", "B1", "P1"].filter((m) => R[m]);
+  const cs = (conds || Object.keys(R[models[0]])).filter((c) => R[models[0]][c]);
+  const PD = isV2(agg) && level === "session" && op === "matched" ? agg.paired_differences["P1-B0"] : null;
+  return `<table><caption class="sr-only">${level}-level alert rates</caption><thead><tr><th scope="col">Condition</th>${models.map((m) => `<th scope="col" class="num">${MODEL_NAME[m]}</th>`).join("")}${PD ? '<th scope="col" class="num">P1 minus raw (paired)</th>' : ""}</tr></thead><tbody>
+    ${cs.map((c) => `<tr><td>${esc(COND_LABEL(agg, c))}<br><span class="tiny muted">${shouldAlert(agg, c) ? "share detected, higher is better" : c === "clean" ? "share flagged, target about 10%" : "share flagged (false alerts), lower is better"}</span></td>
+      ${models.map((m) => `<td class="num"><strong>${pct(R[m][c])}</strong><br><span class="tiny muted">${ci(R[m][c])} &middot; n=${R[m][c].n}</span></td>`).join("")}
+      ${PD ? `<td class="num">${diffHtml(PD.rate[c])}</td>` : ""}</tr>`).join("")}</tbody></table>`;
+}
+function aucTable(agg) {
+  const A = agg.auc || {}, models = ["B0", "B1", "P1"].filter((m) => A[m]);
+  const cs = models.length ? Object.keys(A[models[0]]) : [];
+  if (!cs.length) return "";
+  const PD = agg.paired_differences["P1-B0"];
+  return `<h3>Threshold-free check: does changed speech rank above noise?</h3>
+    <p class="small muted">AUC = the chance that a session with changed speech is further from baseline than the same kind of session with only noise added at 10 dB. 0.5 = no better than chance, 1 = always. No boundary is involved.</p>
+    <div class="tablewrap"><table><thead><tr><th scope="col">Changed speech vs noise only</th>${models.map((m) => `<th scope="col" class="num">${MODEL_NAME[m]}</th>`).join("")}<th scope="col" class="num">P1 minus raw (paired)</th></tr></thead><tbody>
+    ${cs.map((c) => `<tr><td>${esc(COND_LABEL(agg, c))}</td>${models.map((m) => `<td class="num"><strong>${A[m][c].value == null ? "&ndash;" : A[m][c].value.toFixed(2)}</strong><br><span class="tiny muted">${A[m][c].ci[0] == null ? "" : `${A[m][c].ci[0].toFixed(2)}–${A[m][c].ci[1].toFixed(2)}`}</span></td>`).join("")}
+      <td class="num">${PD && PD.auc[c] && PD.auc[c].diff != null ? `<strong>${PD.auc[c].diff > 0 ? "+" : ""}${PD.auc[c].diff.toFixed(2)}</strong><br><span class="tiny muted">${PD.auc[c].ci[0].toFixed(2)} to ${PD.auc[c].ci[1].toFixed(2)} &middot; ${PD.auc[c].excludes_zero ? "excludes 0" : "includes 0"}</span>` : "&ndash;"}</td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+function sweepChart(agg) {
+  const S = agg.noise_sweep;
+  if (!S || !S.levels_db || !S.levels_db.length) return "";
+  const W = 640, H = 260, L = 52, R = 150, T = 14, B = 44, lv = S.levels_db;
+  const x = (i) => L + (lv.length === 1 ? 0.5 : i / (lv.length - 1)) * (W - L - R);
+  const y = (v) => T + (1 - v) * (H - T - B);
+  const style = { B0: "stroke:var(--coral)", B1: "stroke:var(--gray);stroke-dasharray:6 4", P1: "stroke:var(--teal)" };
+  let s = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="False-alert rate on unchanged speech as added noise gets louder, per method, at the matched operating point">`;
+  for (let v = 0; v <= 1.001; v += 0.25) s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${Math.round(v * 100)}%</text>`;
+  lv.forEach((d, i) => { s += `<text x="${x(i)}" y="${H - B + 18}" text-anchor="middle">${d} dB</text>`; });
+  s += `<text x="${(L + W - R) / 2}" y="${H - 6}" text-anchor="middle">signal-to-noise ratio (lower = louder noise)</text>`;
+  s += `<text transform="translate(12 ${(T + H - B) / 2}) rotate(-90)" text-anchor="middle">false alerts</text>`;
+  Object.entries(S.by_method).forEach(([m, arr]) => {
+    const p = arr.map((r, i) => (r && r.rate != null ? `${x(i)},${y(r.rate)}` : null)).filter(Boolean);
+    if (!p.length) return;
+    s += `<polyline fill="none" stroke-width="2.5" style="${style[m] || ""}" points="${p.join(" ")}"/>`;
+    arr.forEach((r, i) => { if (r && r.rate != null) s += `<circle cx="${x(i)}" cy="${y(r.rate)}" r="3.5" style="fill:currentColor;${(style[m] || "").replace("stroke:", "color:")}"><title>${MODEL_NAME[m]}, ${lv[i]} dB: ${pct(r)} (${ci(r)})</title></circle>`; });
+    const last = arr[arr.length - 1];
+    if (last && last.rate != null) s += `<text x="${W - R + 8}" y="${y(last.rate) + 4}">${MODEL_NAME[m]}</text>`;
+  });
+  return `<h3>Noise sweep</h3><p class="small muted">Unchanged speech with held-out noise or babble added at each level. Each model at its matched boundary. Hover a point for its interval.</p>${s}</svg>`;
+}
+function matchedNote(agg) {
+  if (!isV2(agg)) return "";
+  const M = agg.matched_operating_point.by_method;
+  const cells = Object.entries(M).map(([m, v]) => `${MODEL_NAME[m]} ${pct(v.session.clean_alert_rate)}${v.session.within_tolerance ? "" : " (outside 5–15%)"}`);
+  return `<p class="small"><strong>Matched operating point.</strong> ${esc(agg.matched_operating_point.procedure)} Achieved clean alert rates: ${cells.join(", ")}.</p>`;
+}
+function verdictV2(agg) {
+  const h = agg.headline, pd = h.primary_difference, cd = h.change_difference;
+  if (!pd || pd.diff == null) return "";
+  const M = agg.matched_operating_point.by_method;
+  const offTarget = Object.keys(M).filter((m) => !M[m].session.within_tolerance);
+  let s = pd.excludes_zero
+    ? (pd.diff < 0 ? `At the matched operating point the projection produced fewer false alerts under 10 dB noise (${pts(pd.diff)} points, interval ${pts(pd.ci[0])} to ${pts(pd.ci[1])}).`
+                   : `At the matched operating point the projection produced MORE false alerts under 10 dB noise (${pts(pd.diff)} points).`)
+    : `At the matched operating point the difference in false alerts under 10 dB noise is ${pts(pd.diff)} points, but its interval (${pts(pd.ci[0])} to ${pts(pd.ci[1])}) includes zero, so it is not established with ${agg.meta.eval_speakers} speakers.`;
+  if (cd && cd.diff != null) s += cd.diff < -0.05 ? ` It also detected the speech change less often (${pts(cd.diff)} points${cd.excludes_zero ? "" : ", interval includes zero"}).` : " Detection of the speech change was similar.";
+  if (offTarget.length) s += ` Note: the clean alert rate for ${offTarget.join(", ")} fell outside 5–15%, so the operating points are only approximately matched.`;
+  return s;
 }
 async function viewResults() {
   if (!resultsVisible()) {
@@ -694,10 +859,14 @@ async function viewResults() {
   const canRun = d.clip_present && d.profile_baseline_ready;
   const why = !d.clip_present ? `Add a consented 40–60 s recording at <code>demo/clip.wav</code> to enable it.`
     : !d.profile_baseline_ready ? `The clip is compared with the baseline of <strong>${esc(d.profile)}</strong>, which needs 5 good check-ins from the same speaker first.` : "";
+  const v2 = isV2(agg);
   $app.innerHTML = `<h1>Does the projection ignore the room but not the speaker?</h1>
-    ${h ? `<p class="lead" style="max-width:80ch"><strong>Under ${esc(h.noise_condition)}, raw WavLM flagged ${pct(h.false_alert_raw)} of unchanged sessions as different; the noise-invariant projection flagged ${pct(h.false_alert_projection)}.
+    ${h && v2 ? `<p class="lead" style="max-width:80ch"><strong>${esc(h.sentence)}</strong></p>
+        <div class="callout info" style="margin-bottom:20px"><p style="margin:0">${esc(verdictV2(agg))}</p></div>`
+    : h ? `<p class="lead" style="max-width:80ch"><strong>Under ${esc(h.noise_condition)}, raw WavLM flagged ${pct(h.false_alert_raw)} of unchanged sessions as different; the noise-invariant projection flagged ${pct(h.false_alert_projection)}.
         For a controlled change in pausing, raw WavLM detected ${pct(h.change_sensitivity_raw)} and the projection ${pct(h.change_sensitivity_projection)}.</strong></p>
-        <div class="callout info" style="margin-bottom:20px"><p style="margin:0">${esc(verdict(h))}</p></div>`
+        <div class="callout info" style="margin-bottom:20px"><p style="margin:0">${esc(verdict(h))}</p>
+        <p class="small" style="margin:8px 0 0">These figures use the original boundary rule, under which the models' clean alert rates differ. A rerun at a matched operating point is pending.</p></div>`
       : `<div class="callout caution" style="margin-bottom:20px"><h3>Results pending</h3><p class="small">The aggregate experiment hasn't been run on this machine's data yet. On Colab: <code>python -m research.lite.aggregate</code>, then copy <code>results/aggregate.json</code> into the project. Nothing on this page is filled in until then.</p></div>`}
 
     <section class="card stack"><div class="row"><h2 style="margin:0">See it on one recording</h2><span class="spacer"></span>
@@ -707,7 +876,18 @@ async function viewResults() {
       <div id="demoout">${snap ? demoSnapshotHtml(snap) : '<p class="muted small">No demo has been run yet.</p>'}</div>
     </section>
 
-    ${agg ? `<section class="card" style="margin-top:20px"><h2>The numbers</h2>
+    ${agg && v2 ? `<section class="card stack" style="margin-top:20px"><h2>The numbers</h2>
+      <p class="small muted">Session level (3 windows, about 24 s, the way the app scores a check-in). 95% intervals: bootstrap over ${agg.meta.eval_speakers} held-out speakers, the same resample for every model, so differences are paired.
+        Primary comparison, fixed on ${esc(agg.primary_comparison.fixed_on)} before the rerun: ${agg.primary_comparison.methods.join(" vs ")}, ${esc(agg.primary_comparison.level)} level, ${esc(COND_LABEL(agg, agg.primary_comparison.condition))}, matched operating point.</p>
+      ${matchedNote(agg)}
+      <div class="tablewrap">${resultsTable(agg, "session", { conds: ["clean", "noise_10dB", "pause_change", "delivery_change"] })}</div>
+      ${aucTable(agg)}
+      ${sweepChart(agg)}
+      <details><summary>All conditions, session level (noise mix, change plus noise, every noise level)</summary><div class="tablewrap">${resultsTable(agg, "session")}</div></details>
+      <details><summary>Window level (single 8 s windows)</summary><div class="tablewrap">${resultsTable(agg, "window")}</div></details>
+      <details><summary>Original boundary rule (training speakers only; clean rates not matched)</summary><div class="tablewrap">${resultsTable(agg, "session", { op: "train_boundary" })}</div></details>
+      <p class="tiny muted">Generated ${esc(agg.generated_at)} &middot; WavLM layer ${agg.meta.wavlm_layer} &middot; ${esc(agg.meta.distance)} distance &middot; boundary = ${Math.round(agg.meta.boundary_quantile * 100)}th percentile of normal variation.</p></section>`
+    : agg ? `<section class="card" style="margin-top:20px"><h2>The numbers</h2>
       <p class="small muted">Session level (3 windows, about 24 s, the way the app scores a check-in). Each model is judged against its own boundary, set from <em>training</em> speakers' clean audio only. 95% intervals: bootstrap over ${agg.meta.eval_speakers} held-out speakers.</p>
       <div class="tablewrap">${resultsTable(agg, "session")}</div>
       <details><summary>Window level (single 8 s windows)</summary><div class="tablewrap">${resultsTable(agg, "window")}</div></details>
@@ -717,8 +897,11 @@ async function viewResults() {
       <section class="card stack"><h2>Method</h2><ul class="small">
         <li>Frozen <strong>WavLM-base</strong> speech encoder; a small <strong>projection</strong> (768&rarr;128) trained, without diagnosis labels, to give the same output for clean and noisy versions of the same speech (invariance, variance and covariance terms) while still predicting pause fraction, pitch variability and speech timing.</li>
         <li>Training noise: MUSAN noise, music and babble, simulated rooms and microphone coloring. Evaluation noise comes from <strong>different noise files</strong> and <strong>different speakers</strong>.</li>
-        <li>A session's difference from baseline is the cosine distance from the mean of that speaker's other sessions. Crossing the model's boundary counts as an alert.</li>
-        <li>The controlled speech change inserts short pauses of the recording's own room tone after each phrase. The words and recording conditions stay the same.</li>
+        <li>Encoder layer: WavLM layer ${agg ? agg.meta.wavlm_layer : 6}, mean-pooled over each 8 s window.${agg ? ` ${agg.meta.eval_speakers} held-out evaluation speakers${agg.meta.train_speakers || agg.meta.train_speakers_for_boundary ? `; ${agg.meta.train_speakers || agg.meta.train_speakers_for_boundary} training speakers` : ""}.` : ""}</li>
+        <li><strong>Three models.</strong> ${agg && agg.models ? Object.entries(agg.models).map(([m, t]) => `<strong>${m}</strong>: ${esc(t)}`).join(" ") : "<strong>B0</strong>: raw WavLM. <strong>B1</strong>: projection trained for noise invariance only. <strong>P1</strong>: B1 plus acoustic preservation (it must still predict pause fraction, pitch variability and speech-run rate)."}
+          B1 is the simpler head. P1's extra term is meant to stop real delivery changes from being projected away along with the noise; the tables show whether that matters here.</li>
+        <li>A session's difference from baseline is the cosine distance from the mean of that speaker's other sessions. Crossing the model's boundary counts as an alert.${agg && isV2(agg) ? " Each model's boundary is set so that it flags about 10% of clean, unchanged sessions (leave-one-speaker-out), so all models are compared at the same clean alert rate." : ""}</li>
+        <li>Controlled speech changes: short pauses of the recording's own room tone inserted after each phrase${agg && isV2(agg) && agg.results.session.matched.B0.delivery_change ? ", and delivery slowed by 20% without changing pitch" : ""}. The words and recording conditions stay the same. Both are synthetic.</li>
       </ul></section>
       <section class="card stack"><h2>Limitations</h2><ul class="small">
         ${((agg && agg.limitations) || ["Results are pending, so no evidence is shown yet."]).map((x) => `<li>${esc(x)}</li>`).join("")}
@@ -732,6 +915,9 @@ async function viewResults() {
       <li>Bardes, Ponce &amp; LeCun. VICReg: variance-invariance-covariance regularization for self-supervised learning. ICLR 2022. <a href="https://arxiv.org/abs/2105.04906">arXiv:2105.04906</a></li>
       <li>Snyder, Chen &amp; Povey. MUSAN: a music, speech, and noise corpus. 2015. <a href="https://arxiv.org/abs/1510.08484">arXiv:1510.08484</a></li>
       <li>Ko et al. A study on data augmentation of reverberant speech for robust speech recognition. ICASSP 2017 (OpenSLR 28 room impulse responses). <a href="https://www.openslr.org/28/">openslr.org/28</a></li>
+      <li>Cummins, Scherer, Krajewski, Schnieder, Epps &amp; Quatieri. A review of depression and suicide risk assessment using speech analysis. Speech Communication 71, 2015.</li>
+      <li>Low, Bentley &amp; Ghosh. Automated assessment of psychiatric disorders using speech: a systematic review. Laryngoscope Investigative Otolaryngology 5(1), 2020.</li>
+      <li>Fagherazzi, Fischer, Ismael &amp; Despotovic. Voice for health: the use of vocal biomarkers from research to clinical practice. Digital Biomarkers 5(1), 2021.</li>
     </ol></section>
 
     <details class="card" style="margin-top:20px"><summary>Try your own recording (controlled experiment)</summary>${await labFormHtml()}</details>`;
@@ -876,8 +1062,8 @@ async function viewReviewQueue() {
 async function viewReviewDetail(fid) {
   const f = await api(`/v1/review-flags/${encodeURIComponent(fid)}`);
   const tl = await timeline(f.patient_id, 365);
-  const sm = f.summary, ACTIONS = { OPEN: ["acknowledge", "dismiss", "close"], ACKNOWLEDGED: ["review", "dismiss", "close"], REVIEWED: ["close"] };
-  const LABEL = { acknowledge: "Acknowledge", review: "Mark reviewed", close: "Close", dismiss: "Dismiss" };
+  const sm = f.summary, ACTIONS = { OPEN: ["acknowledge", "request_repeat", "dismiss", "close"], ACKNOWLEDGED: ["review", "request_repeat", "dismiss", "close"], REVIEWED: ["request_repeat", "close"] };
+  const LABEL = { acknowledge: "Acknowledge", review: "Mark reviewed", close: "Close review", dismiss: "Dismiss", request_repeat: "Request repeat" };
   const acts = ACTIONS[f.status] || [];
   $app.innerHTML = `<a href="#/review">&larr; Review queue</a>
     <h1>Speech Change Review ${flagPill(f.status)}</h1>
@@ -890,18 +1076,21 @@ async function viewReviewDetail(fid) {
           <dt>Qualifying recordings</dt><dd>${sm.qualifying} of ${sm.window}, on ${sm.distinct_days} days</dd></dl>
         <p class="small muted">A crossing of the boundary describes measured speech, not a health condition. This review does not prescribe any follow-up.</p></section>
       <section class="card stack"><h2>Review</h2>
-        ${acts.length ? `<label for="rnote">Note (optional)</label><textarea id="rnote" rows="3" maxlength="500"></textarea>
+        ${acts.length ? `<label for="rnote">Note (required to close or dismiss)</label><textarea id="rnote" rows="3" maxlength="500"></textarea>
+          <p class="tiny muted" style="margin:0">Request repeat asks the person for another check-in in the app. It is not a treatment instruction, and nothing is sent outside the app.</p>
           <div class="row">${acts.map((a) => `<button data-act="${a}" class="${a === acts[0] ? "primary" : ""}">${LABEL[a]}</button>`).join("")}<button data-act="note">Add note only</button></div>`
           : `<p class="muted small">This review is ${esc(f.status.toLowerCase())}. Dismissing a review does not mean the speech change was insignificant.</p>`}
         <p id="ractmsg" role="status" class="small"></p></section>
     </div>
     <section class="card" style="margin-top:20px"><h2>Evidence</h2>
       ${tl ? sessionChart(tl.checkins.slice(-14)) : ""}
-      <div class="tablewrap"><table><caption class="sr-only">Check-ins behind this review</caption><thead><tr><th>Check-in</th><th>Role</th><th>Quality</th><th class="num">Difference (&times; boundary)</th><th>Speech timing</th><th></th></tr></thead><tbody>
-        ${f.evidence.map((e) => `<tr><td>${fmtDT(e.recorded_at)}</td><td>${e.role === "qualifying" ? "Above boundary" : "Within boundary (context)"}</td><td>${qualityPill(e.quality)}</td>
-          <td class="num">${fmt(e.normalized_score)}</td><td class="small">${(e.timing_chips || []).map((x) => esc(sentence(x.text))).join(" ") || "&ndash;"}</td>
-          <td>${e.has_window_analysis ? `<a href="#/analysis/${encodeURIComponent(e.checkin_id)}">Window analysis</a>` : ""}</td></tr>`).join("")}
+      <div class="tablewrap"><table><caption class="sr-only">Check-ins behind this review</caption><thead><tr><th>Check-in</th><th>Role</th><th>Quality</th><th class="num">Difference (&times; boundary)</th><th class="num">Pause time vs baseline</th><th>Speech timing</th><th>Reported context</th><th></th></tr></thead><tbody>
+        ${f.evidence.map((e) => { const pf = e.acoustic_features && e.acoustic_features.pause_fraction; return `<tr><td>${fmtDT(e.recorded_at)}</td><td>${e.role === "qualifying" ? "Above boundary" : "Within boundary (context)"}</td><td>${qualityPill(e.quality)}</td>
+          <td class="num">${fmt(e.normalized_score)}</td><td class="num">${pf && pf.status === "VALID" ? `${FEATURE_FMT.pause_fraction(pf.current)}<br><span class="tiny muted">${DELTA_FMT.pause_fraction(pf.delta)}</span>` : '<span class="muted small">unavailable</span>'}</td>
+          <td class="small">${(e.timing_chips || []).map((x) => esc(sentence(x.text))).join(" ") || "&ndash;"}</td><td class="small">${esc(contextText(e.context)) || "&ndash;"}</td>
+          <td>${e.has_window_analysis ? `<a href="#/analysis/${encodeURIComponent(e.checkin_id)}">Window analysis</a>` : ""}</td></tr>`; }).join("")}
       </tbody></table></div>
+      ${(f.verifications || []).length ? `<p class="small"><strong>Repeat check-ins</strong> (shown for context, never counted as extra evidence): ${f.verifications.map((v) => `${fmtDT(v.recorded_at)}: ${esc((VRESULT[v.result] || [v.result || "pending"])[0])}`).join("; ")}</p>` : ""}
       <p class="small"><a href="#/trends" id="totrends">Open this person's Trends &rarr;</a></p></section>
     <div class="grid half" style="margin-top:20px">
       <section class="card"><h2>Model context</h2><dl class="meta small">
@@ -915,9 +1104,13 @@ async function viewReviewDetail(fid) {
   document.getElementById("totrends").onclick = () => setPid(f.patient_id);
   $app.querySelectorAll("[data-act]").forEach((b) => (b.onclick = async () => {
     const msg = document.getElementById("ractmsg");
+    if (["close", "dismiss"].includes(b.dataset.act) && !document.getElementById("rnote").value.trim()) {
+      msg.textContent = "Add a note with the reason before closing or dismissing."; return;
+    }
     try {
       await post(`/v1/review-flags/${encodeURIComponent(fid)}/actions`, { action: b.dataset.act, actor: "reviewer_demo", note: document.getElementById("rnote").value });
-      viewReviewDetail(fid); renderTopbar();
+      await viewReviewDetail(fid); renderTopbar();
+      if (b.dataset.act === "request_repeat") document.getElementById("ractmsg").textContent = "Repeat requested. The person will see it on their Home page.";
     } catch (e) { msg.textContent = "That action isn't allowed now (" + e.message + ")."; }
   }));
 }
@@ -974,6 +1167,10 @@ function checkinDetail(c) {
     ${safety ? `<div class="support"><p class="big">Support resources were shown</p><p>No scores are displayed for this check-in.</p></div>` : ""}
     ${!safety && c.drift ? `<p>Difference from baseline: <strong>${fmt(c.drift.d / c.drift.tau)}</strong> &times; the session boundary${c.drift.confirmed ? " (sustained over recent check-ins)" : ""}.</p>` : !safety ? '<p class="muted">Baseline check-in: not compared.</p>' : ""}
     ${(c.timing_chips || []).length ? `<p class="small">${c.timing_chips.map((x) => esc(sentence(x.text))).join(" ")}</p>` : ""}
+    <p class="tiny muted">Task: ${esc((c.protocol || {}).prompt_id || "default")} (${esc((c.protocol || {}).task_type || "free_speech")})${c.checkin_type === "verification" ? ` &middot; repeat of an earlier check-in${c.verification ? `: ${esc((VRESULT[c.verification.result] || [c.verification.result])[0])}` : ""}` : ""}</p>
+    ${c.comparison ? `<p class="small callout caution">${esc(c.comparison.message)}</p>` : ""}
+    ${!safety && c.acoustic_features ? acousticHtml(c.acoustic_features, c.acoustic_summary, { heading: "Speech measurements" }) : ""}
+    ${contextText(c.context) ? `<p class="small"><strong>Reported context:</strong> ${esc(contextText(c.context))}</p>` : ""}
     ${c.has_window_analysis ? `<p><a class="btn" href="#/analysis/${encodeURIComponent(c.checkin_id)}">${icon("analysis")}Window-by-window analysis</a></p>` : ""}
     ${!safety ? `<h3>Evidence quotes</h3>${(c.evidence || []).length ? c.evidence.map((e) => `<p class="small"><span class="pill gray">${esc(e.item)}</span> &ldquo;${esc(e.quote)}&rdquo;</p>`).join("") : '<p class="muted small">None found (or evidence unavailable).</p>'}
       <h3>Transcript</h3><div class="transcript small">${c.transcript ? highlight(c.transcript, c.evidence) : '<span class="muted">Transcript unavailable.</span>'}</div>` : ""}

@@ -64,6 +64,10 @@ def session_eval(ck: store.Checkin, prev: list[store.Checkin]) -> dict:
     q = (ck.quality or {}).get("verdict")
     if ck.status == "SAFETY":
         reasons.append("SAFETY_PATH")                       # handled by the separate, immediate safety path
+    if (ck.extra or {}).get("verification_of"):
+        reasons.append("VERIFICATION_REPEAT")               # same episode as its original: never counted twice
+    if (ck.extra or {}).get("comparison"):
+        reasons.append("PROMPT_INCOMPATIBLE")
     if q not in ("PASS", "WARN"):
         reasons.append("QUALITY_NOT_PASSED")
     if not ck.session_vec and "SAFETY_PATH" not in reasons and "QUALITY_NOT_PASSED" not in reasons:
@@ -91,6 +95,10 @@ def session_eval(ck: store.Checkin, prev: list[store.Checkin]) -> dict:
 
 
 def _state_from_reasons(reasons: list[str]) -> str:
+    if "VERIFICATION_REPEAT" in reasons:
+        return "VERIFICATION_REPEAT"
+    if "PROMPT_INCOMPATIBLE" in reasons:
+        return "INCOMPATIBLE_PROTOCOL"
     if "BASELINE_PENDING" in reasons:
         return "BASELINE_PENDING"
     if "CALIBRATION_PENDING" in reasons or "THRESHOLD_INVALID" in reasons:
@@ -237,11 +245,26 @@ def act(s: Session, flag_id: str, action: str, actor: str, note: str = "") -> st
     if action == "note":
         _audit(s, actor, "review_flag", flag_id, "note", None, note=note[:500])
         return f
+    if action == "request_repeat":
+        # asks the person for another check-in (in-app only). Not a treatment directive; status is unchanged.
+        if f.status not in ACTIVE:
+            raise ValueError(f"cannot request a repeat on a flag that is {f.status}")
+        n = store.NotificationOutbox(
+            notification_id=store.new_id("nt"), flag_id=flag_id, recipient_id=f.patient_id, channel="in_app_patient",
+            external_delivery=False, delivery_status="delivered_in_app", attempt_count=1, sent_at=store.utcnow(),
+            payload={"subject": "Repeat check-in requested",
+                     "body": "Your reviewer asked for another check-in using the same reading passage."})
+        s.add(n)
+        _audit(s, actor, "review_flag", flag_id, "request_repeat", None, note=note[:500],
+               notification_id=n.notification_id)
+        return f
     if action not in TRANSITIONS:
         raise ValueError(f"unknown action {action!r}")
     allowed, new = TRANSITIONS[action]
     if f.status not in allowed:
         raise ValueError(f"cannot {action} a flag that is {f.status}")
+    if action in ("close", "dismiss") and not note.strip():
+        raise ValueError(f"{action} needs a documented reason (note)")
     now = store.utcnow()
     f.status = new
     if new == "ACKNOWLEDGED":
@@ -279,7 +302,16 @@ def flag_json(f: store.ReviewFlag, s: Session | None = None, detail: bool = Fals
                              "normalized_score": sc.normalized_score if sc else None,
                              "threshold_exceeded": sc.threshold_exceeded if sc else None,
                              "timing_chips": (ck.extra or {}).get("timing_chips", []),
+                             "acoustic_features": (ck.extra or {}).get("acoustic_features"),
+                             "acoustic_summary": (ck.extra or {}).get("acoustic_summary", []),
+                             "context": (ck.extra or {}).get("context"),
                              "has_window_analysis": bool((ck.extra or {}).get("window_analysis"))})
+            # verification repeats of the evidence check-ins: shown, never counted as extra evidence
+            ids = {r["checkin_id"] for r in rows}
+            rows_v = [{"checkin_id": c.id, "verification_of": c.extra["verification_of"],
+                       "recorded_at": iso(c.created_at), "result": (c.extra.get("verification") or {}).get("result")}
+                      for c in scoring.history(s, f.patient_id) if (c.extra or {}).get("verification_of") in ids]
+            out["verifications"] = rows_v
             out["evidence"] = sorted(rows, key=lambda r: r["recorded_at"])
             out["audit"] = [{"timestamp": iso(a.timestamp), "actor_id": a.actor_id, "action": a.action,
                              "reason_code": a.reason_code, "detail": a.detail}

@@ -17,11 +17,19 @@ class Quality:
     clipping: float
     reasons: list[str] = field(default_factory=list)
     speech_mask: np.ndarray | None = None  # per-frame bool, not serialized
+    duration_s: float = 0.0
+    rms: float = 0.0
 
     def to_json(self) -> dict:
-        return {"verdict": self.verdict, "speech_s": round(self.speech_s, 1),
-                "snr_db": round(self.snr_db, 1), "clipping": round(self.clipping, 4),
-                "reasons": self.reasons}
+        frac = self.speech_s / self.duration_s if self.duration_s > 0 else 0.0
+        return {"verdict": self.verdict,
+                "status": "REJECT" if self.verdict == "REJECT" else "PASS",   # PASS includes usable-with-warning
+                "duration_seconds": round(self.duration_s, 2), "speech_seconds": round(self.speech_s, 2),
+                "speech_fraction": round(frac, 3), "clipping_fraction": round(self.clipping, 4),
+                "rms_amplitude": round(self.rms, 5),
+                "speech_s": round(self.speech_s, 1), "snr_db": round(self.snr_db, 1), "clipping": round(self.clipping, 4),
+                "snr_method": "estimate: speech frames vs non-speech frames of the same recording",
+                "reasons": self.reasons, "reason_codes": [REASON_CODES.get(r, r) for r in self.reasons]}
 
 
 def _frames(x: np.ndarray) -> np.ndarray:
@@ -90,9 +98,13 @@ def assess(x: np.ndarray, cfg) -> Quality:
     speech_s = float(mask.sum() * FRAME / SR)
     snr = estimate_snr_db(x, mask)
     clipping = float(np.mean(np.abs(x) >= 0.99)) if len(x) else 0.0
+    dur = len(x) / SR
+    rms = float(np.sqrt(np.mean(np.asarray(x, np.float64) ** 2))) if len(x) else 0.0
     rej, warn = [], []
-    if speech_s < q["reject_speech_s"]:
+    if speech_s < max(q["reject_speech_s"], q.get("min_speech_seconds", 0)):
         rej.append("not enough speech")
+    elif dur > 0 and speech_s / dur < q.get("min_speech_fraction", 0):
+        rej.append("too much silence")
     if snr < q["reject_snr_db"]:
         rej.append("too much background noise")
     if clipping > q["reject_clipping"]:
@@ -105,11 +117,19 @@ def assess(x: np.ndarray, cfg) -> Quality:
         if clipping > q["warn_clipping"]:
             warn.append("slight distortion")
     verdict = "REJECT" if rej else "WARN" if warn else "PASS"
-    return Quality(verdict, speech_s, snr, clipping, rej or warn, mask)
+    return Quality(verdict, speech_s, snr, clipping, rej or warn, mask, dur, rms)
 
+
+REASON_CODES = {
+    "not enough speech": "INSUFFICIENT_SPEECH", "too much silence": "EXCESSIVE_SILENCE",
+    "too much background noise": "LOW_SNR_ESTIMATE", "audio is distorted (too loud)": "CLIPPING",
+    "recording too short": "TOO_SHORT", "recording too long": "TOO_LONG", "unreadable audio": "UNREADABLE_AUDIO",
+    "processing error": "PROCESSING_ERROR", "short speech": "SHORT_SPEECH", "some background noise": "SOME_NOISE",
+    "slight distortion": "SLIGHT_CLIPPING"}
 
 PATIENT_MESSAGES = {   # actionable, non-alarming (NHS error-message style); never about the person's health
-    "not enough speech": "We couldn't detect enough speech. Check your microphone and try again.",
+    "not enough speech": "Not enough speech was detected. Check that your microphone is working and read the whole passage.",
+    "too much silence": "Most of the recording was silent. Start reading soon after you press Start, and stop when you finish.",
     "recording too short": "The recording was too short for analysis. Please record for at least 20 seconds.",
     "recording too long": "The recording was longer than 90 seconds. Please keep it to about a minute.",
     "too much background noise": "Recording quality was insufficient for this comparison. Try again somewhere quieter.",

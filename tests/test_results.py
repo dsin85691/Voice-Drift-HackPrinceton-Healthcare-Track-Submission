@@ -23,8 +23,8 @@ def test_seeded_drift_profile_reads_as_drifted_whatever_model_is_loaded(client):
     assert tl["tau"] == pytest.approx(1.47)                     # the fallback (seed) space, not the loaded model
 
 
-def _lite_fixture(tmp_path):
-    """Fake L1 + L2 shards and P1/B1 checkpoints for the aggregate script."""
+def _lite_fixture(tmp_path, with_l3=True):
+    """Fake L1 + L2 (+ L3) shards and P1/B1 checkpoints for the aggregate script."""
     import pandas as pd
 
     from research.extract import write_shard
@@ -32,7 +32,7 @@ def _lite_fixture(tmp_path):
     from research.lite.extract import SWEEP_SNRS, VIEWS
     rng = np.random.default_rng(0)
     nuis = rng.normal(0, 1, (6, 768)) * 2
-    rows, F, rows2, F2 = [], [], [], []
+    rows, F, rows2, F2, rows3, F3 = [], [], [], [], [], []
     for s in range(12):
         ident = rng.normal(0, 1, 768)
         for i in range(18):
@@ -50,9 +50,17 @@ def _lite_fixture(tmp_path):
                                   "view_detail": "x", "seconds": 8.0, "t_pause_fraction": 0.2, "t_pitch_var_st": 1.0,
                                   "t_run_rate": 0.5, "m_pause_fraction": True, "m_pitch_var_st": True, "m_run_rate": True})
                     F2.append(np.tile(clean + nuis[3 + k % 3] * (k + 1) / 2, (13, 1)).astype(np.float16))
+                if with_l3:
+                    change = clean + 1.5 * rng.normal(0, 1, 768)
+                    for v, x in (("stretch", change), ("pause_noise10", views[4] + nuis[4]),
+                                 ("stretch_noise10", change + nuis[4])):
+                        rows3.append({**rows2[-1], "view": v})
+                        F3.append(np.tile(x, (13, 1)).astype(np.float16))
     feats = tmp_path / "lite_feats"; feats.mkdir()
     write_shard(feats, "L1_0000", np.stack(F), pd.DataFrame(rows))
     write_shard(feats, "L2_0000", np.stack(F2), pd.DataFrame(rows2))
+    if with_l3:
+        write_shard(feats, "L3_0000", np.stack(F3), pd.DataFrame(rows3))
     ck = tmp_path / "ck"; ck.mkdir()
     for k in ("P1", "B1"):
         h = ProjectionHead()
@@ -60,21 +68,66 @@ def _lite_fixture(tmp_path):
     return feats, ck
 
 
-def test_aggregate_experiment_produces_the_two_numbers(tmp_path):
+def test_aggregate_experiment_matched_operating_point_auc_and_paired_differences(tmp_path):
     from research.lite import aggregate
     feats, ck = _lite_fixture(tmp_path)
     out = aggregate.run(feats, ck, layer=6, out_path=tmp_path / "results" / "aggregate.json", B=200)
     h = out["headline"]
-    assert h["projection_model"] == "P1" and h["level"].startswith("session")
+    assert h["projection_model"] == "P1" and h["level"].startswith("session") and h["operating_point"] == "matched"
     for k in ("false_alert_raw", "false_alert_projection", "change_sensitivity_raw", "change_sensitivity_projection"):
         assert 0 <= h[k]["rate"] <= 1 and h[k]["ci"][0] <= h[k]["rate"] <= h[k]["ci"][1] and h[k]["n"] == 4 * 6
-    assert h["noise_condition"].startswith("added held-out noise or babble at 10 dB")       # uses the L2 sweep
-    assert set(out["results"]["session"]["B0"]) >= {"clean", "noise_mix", "pause_change", "noise_0dB", "noise_20dB"}
-    assert out["meta"]["eval_speakers"] == 4 and out["meta"]["train_speakers_for_boundary"] == 8
+    assert "10 dB" in h["noise_condition"] and h["sentence"].startswith("At a matched clean-speech alert rate")
+    assert h["change_condition"].startswith("SYNTHETIC change: 20% slower")              # L3 present -> delivery change
+    S = out["results"]["session"]["matched"]
+    assert set(S["B0"]) >= {"clean", "noise_mix", "pause_change", "noise_0dB", "noise_20dB", "delivery_change",
+                            "change_plus_noise", "delivery_plus_noise"}
+    assert set(out["results"]["session"]) == {"matched", "train_boundary"}
+    # matched boundaries: leave-one-speaker-out, so each speaker's boundary excludes its own clean data
+    mo = out["matched_operating_point"]["by_method"]
+    assert set(mo) == {"B0", "P1", "B1"} and len(mo["B0"]["session"]["boundary_by_speaker"]) == 4
+    assert all(isinstance(mo[m]["session"]["within_tolerance"], bool) for m in mo)
+    # AUC per method with interval; paired differences with an excludes_zero verdict
+    a = out["auc"]["B0"]["pause_change"]
+    assert 0 <= a["value"] <= 1 and a["ci"][0] <= a["value"] <= a["ci"][1]
+    pdiff = out["paired_differences"]["P1-B0"]["rate"]["noise_10dB"]
+    assert set(pdiff) == {"diff", "ci", "excludes_zero"} and isinstance(pdiff["excludes_zero"], bool)
+    assert set(out["paired_differences"]) == {"P1-B0", "P1-B1", "B1-B0"}
+    assert out["primary_comparison"]["methods"] == ["P1", "B0"] and out["primary_comparison"]["fixed_on"]
+    assert out["noise_sweep"]["levels_db"] == [20, 10, 5, 0] and len(out["noise_sweep"]["by_method"]["P1"]) == 4
+    assert set(out["models"]) == {"B0", "B1", "P1"} and out["meta"]["eval_speakers"] == 4
     # raw features: added noise in this fixture is huge, so raw must flag far more noisy sessions than clean ones
-    S = out["results"]["session"]["B0"]
-    assert S["noise_0dB"]["rate"] > S["clean"]["rate"]
-    assert json.loads((tmp_path / "results" / "aggregate.json").read_text())["illustrative"] is False
+    assert S["B0"]["noise_0dB"]["rate"] > S["B0"]["clean"]["rate"]
+    txt = (tmp_path / "results" / "aggregate.json").read_text()
+    assert "NaN" not in txt and json.loads(txt)["illustrative"] is False
+
+
+def test_aggregate_without_l3_falls_back_to_pause_change(tmp_path):
+    from research.lite import aggregate
+    feats, ck = _lite_fixture(tmp_path, with_l3=False)
+    out = aggregate.run(feats, ck, layer=6, out_path=tmp_path / "a.json", B=50)
+    assert "delivery_change" not in out["results"]["session"]["matched"]["B0"]
+    assert "pauses" in out["headline"]["sentence"] and "delivery_change" not in out["auc"]["B0"]
+
+
+def test_matched_boundary_and_auc_helpers():
+    from research.lite.aggregate import _auc, matched_boundaries
+    clean = {"a": np.array([0.1, 0.2]), "b": np.array([0.3, 0.4]), "c": np.array([5.0, 6.0])}
+    t = matched_boundaries(clean, q=1.0)
+    assert t["a"] == 6.0 and t["c"] == 0.4                          # never uses the speaker's own data
+    assert _auc(np.array([2.0, 3.0]), np.array([0.0, 1.0])) == 1.0
+    assert _auc(np.array([1.0]), np.array([1.0])) == 0.5           # ties count half
+
+
+def test_time_stretch_slows_delivery_without_changing_pitch():
+    from research.lite.acoustic import time_stretch
+    sr = 16000
+    t = np.arange(4 * sr) / sr
+    x = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+    y = time_stretch(x, 1.2)
+    assert abs(len(y) / len(x) - 1.2) < 0.01
+    f = np.fft.rfftfreq(len(y), 1 / sr)
+    assert abs(f[np.argmax(np.abs(np.fft.rfft(y)))] - 200) < 2      # same fundamental
+    assert np.isfinite(y).all() and np.max(np.abs(y)) < 0.5
 
 
 def test_loso_reference_excludes_the_tested_session():

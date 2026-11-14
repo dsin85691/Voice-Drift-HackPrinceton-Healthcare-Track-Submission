@@ -6,8 +6,10 @@ from datetime import datetime
 import numpy as np
 from sqlmodel import Session, select
 
+from . import protocol as P
 from .config import get_config
 from .pipeline import drift as D
+from .pipeline import evidence as EV
 from .store import Alert, Baseline, Checkin, blob_to_vec, new_id, utcnow, vec_to_blob
 
 TIMING_KEYS = {"speech_rate": "speech_rate_wpm", "pause_rate": "pause_rate_pm", "mean_pause": "mean_pause_s"}
@@ -56,14 +58,32 @@ def apply_scoring(s: Session, ck: Checkin, *, vec: np.ndarray | None, vec_raw: n
             s.add(a)
         return alerts
 
+    for v in (vec, vec_raw):     # zero-norm or non-finite embeddings would give NaN cosine/z scores: refuse them
+        if v is not None and verdict != "REJECT" and (not np.isfinite(v).all() or float(np.linalg.norm(v)) == 0.0):
+            raise ValueError("invalid embedding (zero norm or non-finite)")
     ck.session_vec = vec_to_blob(vec) if verdict != "REJECT" else None
     ck.session_vec_raw = vec_to_blob(vec_raw) if verdict != "REJECT" else None
     if verdict == "REJECT":
         ck.window_vecs = ck.window_vecs_raw = None
     bl = s.get(Baseline, ck.patient_id)
     base_n = int(cfg["baseline_n"])
-    scored_hist = [(c.drift["exceeds"], c.drift["weight"]) for c in prev if c.drift]
+    # a verification repeat belongs to its original's episode: it never adds to the sustained-difference count
+    scored_hist = [(c.drift["exceeds"], c.drift["weight"]) for c in prev
+                   if c.drift and not (c.extra or {}).get("verification_of")]
     drift_json, confirmed, exceeds = None, False, False
+    incompatible = None
+    if bl is not None and bl.frozen_at is not None and verdict in ("PASS", "WARN"):
+        rows = baseline_rows(prev, base_n)
+        bp, cp = (P.of_checkin(rows[0]) if rows else None), P.of_checkin(ck)
+        if bp is not None and not P.compatible(bp, cp):
+            incompatible = {"status": "INCOMPATIBLE_PROTOCOL", "baseline_prompt": bp, "current_prompt": cp,
+                            "message": "This recording used a different speaking task from your baseline, so it "
+                                       "was not compared. Record with the same task as your baseline, or start a "
+                                       "new baseline."}
+        elif ck.extra.get("acoustic") is not None:
+            cmp = EV.compare(ck.extra["acoustic"], [(c.extra or {}).get("acoustic") for c in rows])
+            ck.extra["acoustic_features"] = cmp
+            ck.extra["acoustic_summary"] = EV.describe(cmp)
 
     if bl is None or bl.frozen_at is None:
         # still building the baseline: only PASS check-ins count, no drift yet
@@ -76,9 +96,13 @@ def apply_scoring(s: Session, ck: Checkin, *, vec: np.ndarray | None, vec_raw: n
             tmu, tsg = D.fit_timing_baseline(trows, dict(cfg["timing_sigma_pop"]), int(cfg["shrink_n0"]))
             s.merge(Baseline(patient_id=ck.patient_id, n=base_n, mu=vec_to_blob(mu), sigma=vec_to_blob(sg),
                              timing_mu=tmu, timing_sigma=tsg, frozen_at=utcnow()))
+    elif incompatible is not None:
+        ck.extra["comparison"] = incompatible              # withheld: no unqualified drift score
     elif verdict in ("PASS", "WARN") and vec is not None:
         mu, sg = blob_to_vec(bl.mu), blob_to_vec(bl.sigma)
         d = D.drift_score(dm.project(vec), mu, sg)
+        if not np.isfinite(d):
+            raise ValueError("non-finite drift score")       # never stored; the check-in fails visibly instead
         exceeds = d > dm.tau
         w = 1.0 if verdict == "PASS" else float(cfg["warn_weight"])
         confirmed = D.confirmed_drift(scored_hist + [(exceeds, w)], float(cfg["confirm_sum"]), int(cfg["confirm_last"]))
@@ -100,6 +124,8 @@ def apply_scoring(s: Session, ck: Checkin, *, vec: np.ndarray | None, vec_raw: n
     baseline_ready = bl is not None and bl.frozen_at is not None
     ck.status = D.decide_status(safety=False, baseline_ready=baseline_ready, confirmed=confirmed,
                                 exceeds=exceeds, dam_high=dam_high, reject_run=run)
+    if incompatible is not None:
+        ck.status = "INCOMPATIBLE"
 
     # Speech-change review requests are created by the persistence-based engine in server/monitoring.py (alerting
     # spec v1.0), evaluated after the check-in is saved. Only the SAFETY path (above) creates an immediate alert.
@@ -144,6 +170,12 @@ def result_json(ck: Checkin, patient_id: str | None = None) -> dict:
         "versions": ck.versions,
         "latency_ms": ex.get("latency_ms", {}),
         "disclaimer": DISCLAIMER,
+        "protocol": P.of_checkin(ck),
+        "checkin_type": ex.get("checkin_type", "standard"),
+        "verification_of": ex.get("verification_of"),
+        "verification": ex.get("verification"),
+        "comparison": ex.get("comparison"),
+        "context": ex.get("context"),
     }
     if ck.status == "SAFETY":
         r["timing"] = None
@@ -155,6 +187,17 @@ def result_json(ck: Checkin, patient_id: str | None = None) -> dict:
     r["reference_risk"] = ck.reference_risk
     r["cohort_risk"] = ex.get("cohort_risk")   # clinician-only; patient_view never includes it
     r["has_window_analysis"] = bool(ex.get("window_analysis"))
+    r["acoustic_features"] = ex.get("acoustic_features")
+    r["acoustic_summary"] = ex.get("acoustic_summary", [])
+    d = ck.drift or {}
+    r["analysis"] = ({"status": "COMPARED", "normalized_drift": round(d["d"] / d["tau"], 4),
+                      "session_distance": d["d"], "session_threshold": d["tau"],
+                      "threshold_source": "session-level drift boundary (not the window-level visualization threshold)",
+                      "model_version": (ck.versions or {}).get("encoder"),
+                      "projection_version": (ck.versions or {}).get("artifacts")}
+                     if d.get("tau") else
+                     {"status": "INCOMPATIBLE_PROTOCOL" if ex.get("comparison") else
+                      "NOT_SCORED" if (ck.quality or {}).get("verdict") == "REJECT" else "BASELINE"})
     return r
 
 
@@ -173,6 +216,17 @@ def patient_view(r: dict) -> dict:
                       "failed" if any(x in ("processing error", "unreadable audio") for x in reasons) else
                       "rejected" if q.get("verdict") == "REJECT" else "accepted")
     out["has_window_analysis"] = r.get("has_window_analysis", False) if out["outcome"] == "accepted" else False
+    out["quality"].update(status=q.get("status", "REJECT" if q.get("verdict") == "REJECT" else "PASS"),
+                          reason_codes=q.get("reason_codes", []))
+    out["protocol"] = r.get("protocol")
+    out["checkin_type"] = r.get("checkin_type", "standard")
+    out["verification_of"] = r.get("verification_of")
+    if out["outcome"] == "accepted":     # self-monitoring: people see their own descriptive measurements
+        out["quality"]["message"] = "Recording quality passed."
+        out["acoustic_features"] = r.get("acoustic_features")
+        out["acoustic_summary"] = r.get("acoustic_summary", [])
+        out["verification"] = r.get("verification")
+        out["context"] = r.get("context")
     if r["status"] == "SAFETY":
         out["safety"] = {"triggered": True,
                          "message": "If you are thinking about harming yourself, you are not alone. "
@@ -180,8 +234,10 @@ def patient_view(r: dict) -> dict:
                                     "Please also contact your clinician today."}
     elif q.get("verdict") == "REJECT":
         out["message"] = out["quality"]["message"]
+    elif r["status"] == "INCOMPATIBLE":
+        out["message"] = "Check-in recorded. " + (r.get("comparison") or {}).get("message", "")
     elif r["status"] in ("RED", "AMBER"):
-        out["message"] = "Check-in recorded. Your clinician will follow up."
+        out["message"] = "Check-in recorded. Your latest recording differs from your personal speech baseline."
     elif r["status"] == "BASELINE":
         n, tot = r.get("baseline_progress") or [0, 5]
         out["message"] = f"Check-in recorded. Building your baseline ({n}/{tot})."

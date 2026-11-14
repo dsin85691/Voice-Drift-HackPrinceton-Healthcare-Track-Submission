@@ -20,6 +20,10 @@ quality:
   warn_speech_s: 25
   warn_snr_db: 18
   warn_clipping: 0.002
+  # feature-spec F2 (provisional software settings, not validated audio-quality standards). The stricter of
+  # min_speech_seconds and reject_speech_s applies; reject_clipping (0.01) is already stricter than the spec's 0.02.
+  min_speech_seconds: 6.0
+  min_speech_fraction: 0.35
 
 windows:                  # per-window quality for the raw-vs-projected visualization
   reject_speech_s: 3.0    # an 8 s window with < 3 s of speech is not scored (shown as a gap)

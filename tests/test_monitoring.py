@@ -110,13 +110,16 @@ def test_lifecycle_audit_and_invalid_transitions(s):
     with pytest.raises(ValueError):
         monitoring.act(s, fid, "review", "rev_1")                             # must acknowledge first
     monitoring.act(s, fid, "acknowledge", "rev_1"); monitoring.act(s, fid, "note", "rev_1", "spoke to them")
-    monitoring.act(s, fid, "review", "rev_1"); monitoring.act(s, fid, "close", "rev_1")
+    monitoring.act(s, fid, "review", "rev_1")
+    with pytest.raises(ValueError):
+        monitoring.act(s, fid, "close", "rev_1")                              # a documented reason is required
+    monitoring.act(s, fid, "close", "rev_1", "reviewed, no action")
     s.commit()
     f = monitoring.flag_json(s.get(store.ReviewFlag, fid), s, detail=True)
     assert f["status"] == "CLOSED" and f["acknowledged_at"] and f["reviewed_at"] and f["closed_at"]
     assert [a["action"] for a in f["audit"]][-4:] == ["acknowledge", "note", "review", "close"]
     with pytest.raises(ValueError):
-        monitoring.act(s, fid, "dismiss", "rev_1")                            # closed is final
+        monitoring.act(s, fid, "dismiss", "rev_1", "x")                       # closed is final
 
 
 def test_cooldown_after_dismissal_then_new_flag(s):
@@ -124,7 +127,7 @@ def test_cooldown_after_dismissal_then_new_flag(s):
     now = datetime.utcnow().replace(microsecond=0)
     ids = _history(s, pid, [(0, 1.5), (1, 1.6), (2, 1.7)], start=now - timedelta(days=7, hours=12))
     fid = ev(s, pid, ids[-1])["flag"]["flag_id"]
-    monitoring.act(s, fid, "dismiss", "rev_1"); s.commit()
+    monitoring.act(s, fid, "dismiss", "rev_1", "context explains it"); s.commit()
     soon = _ck(s, pid, 20, datetime.utcnow() + timedelta(hours=1), r=1.9)
     out = ev(s, pid, soon)
     assert out["monitoring_state"] == "SUPPRESSED" and "COOLDOWN" in out["reason_codes"]

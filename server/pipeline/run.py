@@ -97,7 +97,7 @@ class Runtime:
 
     # ------------------------------------------------------------------ the pipeline
     def process(self, cid: str, pid: str, audio_path: Path, prompt_id: str = "default",
-                interventions: list | None = None) -> None:
+                interventions: list | None = None, verification_of: str | None = None) -> None:
         """Runs a full check-in. Always deletes the audio file, even on error.
         interventions: known noise events marked during recording (seconds from start), for the visualization."""
         t_start = time.perf_counter()
@@ -106,14 +106,14 @@ class Runtime:
         ms = lambda t: int((time.perf_counter() - t) * 1000)
         try:
             try:
-                self._process(cid, pid, audio_path, emit, lat, t_start, ms, interventions)
+                self._process(cid, pid, audio_path, emit, lat, t_start, ms, interventions, prompt_id, verification_of)
             except Exception as e:  # never leave the client hanging
                 if isinstance(e, decode.DecodeError):
                     log.warning("check-in %s: %s", cid, str(e)[:120])
                 else:
                     log.exception("check-in %s failed", cid)
                 store.log_event(cid, "error", 0, repr(e)[:300])
-                self._store_failure(cid, pid, repr(e))
+                self._store_failure(cid, pid, repr(e), prompt_id, verification_of)
                 emit("result", self._result(cid))
         finally:
             try:
@@ -125,13 +125,20 @@ class Runtime:
         with store.session() as s:
             return scoring.result_json(s.get(store.Checkin, cid))
 
-    def _store_failure(self, cid: str, pid: str, err: str) -> None:
+    def _store_failure(self, cid: str, pid: str, err: str, prompt_id: str = "default",
+                       verification_of: str | None = None) -> None:
+        from .. import protocol
+        reason = "unreadable audio" if "unreadable" in err else "processing error"
         with store.session() as s:
             if s.get(store.Checkin, cid) is None:
                 s.add(store.Checkin(id=cid, patient_id=pid, status="BASELINE",
-                                    quality={"verdict": "REJECT", "speech_s": 0, "snr_db": 0, "clipping": 0,
-                                             "reasons": ["unreadable audio" if "unreadable" in err else "processing error"]},
-                                    versions={"git": self.git}, extra={"error": err}))
+                                    quality={"verdict": "REJECT", "status": "REJECT", "speech_s": 0, "snr_db": 0,
+                                             "clipping": 0, "reasons": [reason],
+                                             "reason_codes": [quality.REASON_CODES[reason]]},
+                                    versions={"git": self.git},
+                                    extra={"error": err, "protocol": protocol.meta(prompt_id),
+                                           **({"verification_of": verification_of, "checkin_type": "verification"}
+                                              if verification_of else {})}))
                 s.commit()
 
     def window_analysis(self, s, pid: str, x, q, emb, interventions=None, before=None) -> dict:
@@ -171,16 +178,21 @@ class Runtime:
                 out[name] = windows.contract(a, "controlled_experiment")
         return out
 
-    def _process(self, cid, pid, audio_path, emit, lat, t_start, ms, interventions=None):
+    def _process(self, cid, pid, audio_path, emit, lat, t_start, ms, interventions=None, prompt_id="default",
+                 verification_of=None):
+        from .. import protocol
+        from . import evidence
         cfg = self.cfg
         t = time.perf_counter()
         x = decode.decode_audio(audio_path)
         dur = len(x) / decode.SR
         q = quality.assess(x, cfg)
         if dur < cfg.audio["min_s"]:
-            q = quality.Quality("REJECT", q.speech_s, q.snr_db, q.clipping, ["recording too short"], q.speech_mask)
+            q = quality.Quality("REJECT", q.speech_s, q.snr_db, q.clipping, ["recording too short"], q.speech_mask,
+                                q.duration_s, q.rms)
         elif dur > cfg.audio["max_s"]:
-            q = quality.Quality("REJECT", q.speech_s, q.snr_db, q.clipping, ["recording too long"], q.speech_mask)
+            q = quality.Quality("REJECT", q.speech_s, q.snr_db, q.clipping, ["recording too long"], q.speech_mask,
+                                q.duration_s, q.rms)
         lat["decode"] = ms(t)
         store.log_event(cid, "quality", lat["decode"])
         emit("stage", {"stage": "quality", "ms": lat["decode"], "data": q.to_json()})
@@ -235,7 +247,12 @@ class Runtime:
         ck.extra = {"evidence_dropped": (lang or {}).get("evidence_dropped", 0),
                     "evidence_available": bool(lang and lang["available"]) or not scored,
                     "summary": (lang or {}).get("summary", ""),
-                    "window_count": emb.window_count if emb else 0}
+                    "window_count": emb.window_count if emb else 0,
+                    "protocol": protocol.meta(prompt_id)}
+        if verification_of:
+            ck.extra.update(verification_of=verification_of, checkin_type="verification")
+        if scored:   # same extraction for every recording; rejected recordings carry no measurements at all
+            ck.extra["acoustic"] = evidence.measure(q.speech_mask, words_timing, tr.available)
         if emb is not None:   # clinician-only cohort reference; dropped for SAFETY by result_json
             ck.extra["cohort_risk"] = self.cohort.score(emb.logit)
         if emb is not None and emb.W is not None:       # per-window vectors: needed for window-level calibration
@@ -249,6 +266,9 @@ class Runtime:
                 log.exception("window analysis failed for %s", cid)
             scoring.apply_scoring(s, ck, vec=emb.v if emb else None, vec_raw=emb.v_raw if emb else None,
                                   timing=words_timing, safety=sf, dm=self.dm)
+            if verification_of:
+                from .. import verification
+                ck.extra["verification"] = verification.evaluate(s, ck)
             lat["total"] = ms(t_start)
             ck.extra["latency_ms"] = lat
             s.add(ck)

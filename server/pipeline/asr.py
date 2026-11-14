@@ -23,30 +23,49 @@ class ASR:
     def __init__(self):
         self.model = None
         self.engine = "unavailable"
+        self._load(("cuda", "cpu"))
+
+    def _load(self, devices) -> None:
         cfg = get_config()
+        self.model, self.engine = None, "unavailable"
         try:
             from faster_whisper import WhisperModel
-
-            for dev, ct in (("cuda", "int8"), ("cpu", "int8")):  # CPU fallback (spec 11)
-                try:
-                    self.model = WhisperModel(cfg.models["asr"], device=dev, compute_type=ct)
-                    self.engine = f"{cfg.models['asr']}-{ct}-{dev}"
-                    break
-                except Exception as e:
-                    log.warning("ASR on %s failed: %s", dev, e)
         except ImportError:
             log.warning("faster-whisper not installed: transcripts unavailable")
+            return
+        for dev in devices:  # CPU fallback (spec 11)
+            try:
+                self.model = WhisperModel(cfg.models["asr"], device=dev, compute_type="int8")
+                self.engine = f"{cfg.models['asr']}-int8-{dev}"
+                return
+            except Exception as e:
+                log.warning("ASR on %s failed: %s", dev, e)
 
-    def transcribe(self, x: np.ndarray) -> Transcript:
-        if self.model is None:
-            return Transcript(available=False, engine="unavailable")
+    def _run(self, x: np.ndarray) -> Transcript:
         segs, _ = self.model.transcribe(x, word_timestamps=True, vad_filter=True, language="en")
         words, parts = [], []
-        for s in segs:
+        for s in segs:            # segments are lazy: CUDA library errors surface here, not at load time
             parts.append(s.text.strip())
             for w in s.words or []:
                 words.append((w.word.strip(), float(w.start), float(w.end)))
         return Transcript(" ".join(parts), words, True, self.engine)
+
+    def transcribe(self, x: np.ndarray) -> Transcript:
+        if self.model is None:
+            return Transcript(available=False, engine="unavailable")
+        try:
+            return self._run(x)
+        except Exception as e:
+            if self.engine.endswith("-cuda"):   # e.g. libcublas missing: fall back to CPU once, permanently
+                log.warning("ASR on cuda failed at inference (%s); switching to CPU", e)
+                self._load(("cpu",))
+                if self.model is not None:
+                    try:
+                        return self._run(x)
+                    except Exception as e2:
+                        e = e2
+            log.warning("ASR failed (%s): continuing without a transcript", e)
+            return Transcript(available=False, engine=self.engine)
 
 
 def timing_features(words: list[tuple[str, float, float]], speech_s: float, pause_min_s: float = 0.25) -> dict:

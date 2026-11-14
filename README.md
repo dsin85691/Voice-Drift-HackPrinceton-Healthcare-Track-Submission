@@ -63,6 +63,63 @@ P1. B1 is the same without the acoustic term, and B0 is raw WavLM. It needs abou
 
 **Run it:** see section L in `research/colab_run.py`.
 
+## Check-in workflow (final feature spec v1.0)
+
+- **F1, fixed passage.** `standard_reading_v1` (about 120 words, about 40 s; `server/protocol.py`). It is served
+  by `GET /api/checkin/protocol` and stored on every check-in. A check-in whose prompt or protocol differs from the
+  baseline's is **not compared**: its status is `INCOMPATIBLE` and it shows a message, not a drift score. Check-ins
+  from before this change count as the legacy free-speech task.
+- **F2, quality.** The quality result also records duration, speech seconds, speech fraction, clipping fraction,
+  RMS and reason codes. It adds a rule rejecting recordings that are more than 65% silence. The existing stricter
+  thresholds still apply. Rejected recordings never update the baseline, never get a score and never count
+  toward review flags.
+- **F3, repeat check-in.** A check-in above the session boundary offers "Repeat Check-In"
+  (`GET /api/checkins/{id}/verification`). The repeat is posted with `verification_of`, using the same passage.
+  It is classified as REPRODUCED, NOT_REPRODUCED, INCONCLUSIVE or UNCALIBRATED; without a trained boundary the
+  result is always UNCALIBRATED. A repeat belongs to its original's episode, so it never counts toward
+  persistence or the sustained-difference count.
+- **F4, acoustic evidence.** Pause fraction comes from the voice detector: gaps of at least 200 ms between the
+  first and last speech, with leading and trailing silence excluded. Speaking rate comes from the existing ASR
+  word timings when a transcript exists. Pitch variability is reported as unavailable, because the app has no
+  validated pitch tracker. Each recording is compared with the mean of its baseline recordings, using the same
+  method.
+- **F5, context.** `PATCH /api/checkins/{id}/context` takes tags and a short note. Context is shown to reviewers
+  and never changes a score.
+- **F6, review.** The review flag engine from alerting spec v1.0 gains a `request_repeat` action: an in-app
+  request the person sees on Home; the flag's status is unchanged. Closing or dismissing a flag needs a written
+  reason. Nothing is ever delivered outside the app.
+
+## Aggregate experiment (the Results page)
+
+`research/lite/aggregate.py` writes `results/aggregate.json`, which the Results and Home pages read. It compares B0,
+B1 and P1 at a **matched operating point**. Each evaluation speaker's boundary is the 90th percentile of the
+*other* evaluation speakers' clean session distances (leave-one-speaker-out), set separately for each model, so
+every model flags about 10% of clean sessions.
+
+It reports:
+- alert rates with speaker-bootstrap intervals, under both the matched boundary and the original training-speaker
+  boundary;
+- the AUC for changed speech against noise-only (no threshold);
+- **paired** differences (P1−B0, P1−B1, B1−B0) on a shared speaker bootstrap;
+- the noise sweep.
+
+The primary comparison was fixed on 2026-11-14, before the rerun: P1 vs B0, session level, held-out noise at
+10 dB, matched operating point.
+
+Inputs:
+- **L1:** clean, noise mix and synthetic pauses.
+- **L2:** additive held-out noise at 20, 10, 5 and 0 dB.
+- **L3** (optional): 20% slower delivery without a pitch change (WSOLA time-stretch), plus pauses + 10 dB noise and
+  slower delivery + 10 dB noise.
+
+The extra extraction is about 360 clips, eval speakers only, and `--cpu` runs it without a GPU or ledger entry:
+
+```
+python -m research.lite.extract --manifest manifest.parquet --noise-index noise_index.json --out lite_feats \
+    --change-sweep --cpu --path-map <drive prefix>=<local prefix>
+python -m research.lite.aggregate --feats lite_feats --checkpoints reports/checkpoints
+```
+
 ## Inside a recording: raw vs projected, window by window
 
 The main demo visualization (`server/pipeline/windows.py`, `#/windows/<checkin>` and the `?demo=1#/lab` Replay

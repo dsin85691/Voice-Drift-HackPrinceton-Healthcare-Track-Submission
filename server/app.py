@@ -18,15 +18,13 @@ from sqlmodel import select
 from . import scoring, store
 from .config import ROOT, get_config
 from .pipeline import drift as drift_mod
-from . import monitoring
+from . import monitoring, protocol, verification
 from .pipeline.run import Runtime, demo_enrollment
 from .seed import load_scenario
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 log = logging.getLogger("vd.app")
 
-PROMPTS = {"default": "Tell me about your day so far - how you slept, how your energy has been, "
-                      "and what you have been looking forward to."}
 SEVERITY = {"SAFETY": 0, "RED": 1, "AMBER": 2, "GREEN": 3, "BASELINE": 4}
 
 
@@ -40,8 +38,19 @@ class EvaluateBody(BaseModel):
 
 class FlagActionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    action: str            # acknowledge | review | close | dismiss | note
+    action: str            # acknowledge | review | close | dismiss | note | request_repeat (close/dismiss need a note)
     actor: str
+    note: str = ""
+
+
+CONTEXT_TAGS = {"TIRED": "Feeling tired", "COLD_OR_SORE_THROAT": "Cold or sore throat",
+                "DIFFERENT_ROOM_OR_MIC": "Different microphone or room",
+                "NOTICED_SPEECH_CHANGE": "Noticed a change in how I speak", "NONE": "No additional context"}
+
+
+class ContextBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tags: list[str] = []
     note: str = ""
 
 
@@ -97,23 +106,37 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         return {"available": True, **{k: cal[k] for k in keep if k in cal}}
 
     @app.get("/api/prompt")
-    def prompt():
-        return {"prompt_id": "default", "text": PROMPTS["default"]}
+    @app.get("/api/checkin/protocol")
+    def prompt(prompt_id: str = protocol.STANDARD_ID):
+        """The fixed reading passage (F1). Never changes automatically between sessions."""
+        if prompt_id not in protocol.PROMPTS:
+            raise HTTPException(404, "unknown prompt")
+        return protocol.PROMPTS[prompt_id]
 
     # ------------------------------------------------------------------ check-ins
     @app.post("/api/patients/{pid}/checkins", status_code=202)
     async def post_checkin(pid: str, audio: UploadFile = File(...), prompt_id: str = Form("default"),
-                           interventions: str = Form("")):
+                           interventions: str = Form(""), verification_of: str = Form("")):
         try:   # noise events marked live during recording (JSON list); malformed input is ignored, never fatal
             ivs = json.loads(interventions) if interventions else []
             ivs = ivs if isinstance(ivs, list) else []
         except ValueError:
             ivs = []
+        if prompt_id not in protocol.PROMPTS:
+            raise HTTPException(422, "unknown prompt_id")
         r = rt()
         with store.session() as s:
             if s.get(store.Patient, pid) is None:
                 s.add(store.Patient(id=pid, display_name=pid, consent_at=store.utcnow(), **demo_enrollment()))
                 s.commit()
+            if verification_of:   # F3: a repeat of an earlier check-in, same patient, same passage
+                orig = s.get(store.Checkin, verification_of)
+                if orig is None or orig.patient_id != pid:
+                    raise HTTPException(404, "unknown check-in to repeat")
+                if not verification.offer(s, orig)["available"]:
+                    raise HTTPException(409, "this check-in can't be repeated: " + verification.offer(s, orig)["reason"])
+                if protocol.of_checkin(orig)["prompt_id"] != prompt_id:
+                    raise HTTPException(409, "a repeat must use the same passage as the original check-in")
         cid = store.new_id("c")
         suffix = Path(audio.filename or "a.webm").suffix or ".webm"
         path = r.tmp / f"{cid}{suffix}"
@@ -123,8 +146,34 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             path.unlink(missing_ok=True)
             raise
         r.bus.emit(cid, "stage", {"stage": "received", "ms": 0})
-        threading.Thread(target=r.process, args=(cid, pid, path, prompt_id, ivs[:20]), daemon=True).start()
+        threading.Thread(target=r.process, args=(cid, pid, path, prompt_id, ivs[:20], verification_of or None),
+                         daemon=True).start()
         return {"checkin_id": cid}
+
+    @app.get("/api/checkins/{cid}/verification")
+    def checkin_verification(cid: str):
+        """F3: repeat offer for this check-in, and the original-vs-repeat comparison (from either side)."""
+        with store.session() as s:
+            ck = s.get(store.Checkin, cid)
+            if not ck:
+                raise HTTPException(404, "unknown check-in")
+            return verification.linked(s, ck)
+
+    @app.patch("/api/checkins/{cid}/context")
+    def checkin_context(cid: str, body: ContextBody):
+        """F5: optional patient-reported context. Stored beside the check-in; scores are never changed by it."""
+        bad = [t for t in body.tags if t not in CONTEXT_TAGS]
+        if bad:
+            raise HTTPException(422, f"unknown context tags: {bad}")
+        with store.session() as s:
+            ck = s.get(store.Checkin, cid)
+            if not ck:
+                raise HTTPException(404, "unknown check-in")
+            ctx = {"tags": sorted(set(body.tags)), "note": body.note.strip()[:300],
+                   "updated_at": store.utcnow().isoformat() + "Z"}
+            ck.extra = {**(ck.extra or {}), "context": ctx}      # reassign: JSON column change tracking
+            s.add(ck); s.commit()
+            return {"checkin_id": cid, "context": ctx}
 
     def _strip(ev: dict, role: str) -> dict:
         if role != "patient":
@@ -215,19 +264,26 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 full = scoring.result_json(c)
                 rows.append({k: full.get(k) for k in ("checkin_id", "created_at", "status", "quality", "drift",
                                                       "timing", "timing_chips", "reference_risk", "cohort_risk", "has_window_analysis", "evidence",
-                                                      "summary", "simulated", "transcript", "safety")})
+                                                      "summary", "simulated", "transcript", "safety", "protocol",
+                                                      "checkin_type", "verification_of", "verification", "comparison",
+                                                      "context", "acoustic_features", "acoustic_summary", "analysis")})
                 rows[-1]["acted"] = (c.extra or {}).get("acted", False)
                 rows[-1]["environment"] = (c.extra or {}).get("environment")
                 rows[-1]["data_mode"] = "synthetic_demo" if (c.extra or {}).get("simulated") else "real_recording"
                 rows[-1]["baseline_progress"] = (c.extra or {}).get("baseline_progress")
             tau = (drift_space(p.simulated)[0]).tau
+            # a reviewer's in-app repeat request, open until the person's next check-in
+            req = s.exec(select(store.NotificationOutbox).where(store.NotificationOutbox.recipient_id == pid,
+                                                               store.NotificationOutbox.channel == "in_app_patient")
+                         .order_by(store.NotificationOutbox.created_at.desc())).first()
+            repeat_requested = bool(req and (not cks or cks[-1].created_at < req.created_at))
             baseline = None
             if bl and bl.frozen_at:
                 baseline = {"n": bl.n, "frozen_at": bl.frozen_at.isoformat() + "Z", "timing_mu": bl.timing_mu,
                             "timing_sigma": bl.timing_sigma, "tau": tau}
             return {"patient": {"id": p.id, "display_name": p.display_name, "simulated": p.simulated,
                                 "data_mode": "synthetic_demo" if p.simulated else "real_recording"},
-                    "baseline": baseline, "tau": tau, "checkins": rows,
+                    "baseline": baseline, "tau": tau, "checkins": rows, "repeat_requested": repeat_requested,
                     "baseline_n_required": int(get_config().drift["baseline_n"]),
                     "drift_level": "session",
                     "alerts": [{"id": a.id, "checkin_id": a.checkin_id, "kind": a.kind,
@@ -380,7 +436,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             rows = list(s.exec(select(store.NotificationOutbox).order_by(store.NotificationOutbox.created_at.desc())))
             active = {f.flag_id for f in s.exec(select(store.ReviewFlag).where(store.ReviewFlag.status.in_(monitoring.ACTIVE)))}
             return {"mode": get_config().monitoring["notification_mode"], "external_delivery": False,
-                    "unresolved": sum(1 for n in rows if n.flag_id in active),
+                    "unresolved": len({n.flag_id for n in rows if n.flag_id in active and n.channel == "in_app"}),
                     "items": [{"flag_id": n.flag_id, "subject": n.payload.get("subject"), "body": n.payload.get("body"),
                                "delivery_status": n.delivery_status, "created_at": n.created_at.isoformat() + "Z"}
                               for n in rows[:20]]}
