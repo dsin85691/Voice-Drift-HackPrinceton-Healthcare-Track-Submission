@@ -19,6 +19,32 @@ class Projector(nn.Module):
         return self.net((z - self.mean) / self.std)
 
 
+class ProjectionHead(nn.Module):
+    """Lightweight projection (projection-head spec v0.1): 768 -> 256 -> LayerNorm -> GELU -> 128.
+    Adds an input standardizer (buffers, fitted on training clean embeddings): raw WavLM dims differ in scale by
+    orders of magnitude. Output is UNnormalized (variance/covariance terms need the raw scale)."""
+
+    def __init__(self, input_dim: int = 768, hidden: int = 256, out: int = 128):
+        super().__init__()
+        self.register_buffer("mean", torch.zeros(input_dim))
+        self.register_buffer("std", torch.ones(input_dim))
+        self.net = nn.Sequential(nn.Linear(input_dim, hidden), nn.LayerNorm(hidden), nn.GELU(), nn.Linear(hidden, out))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net((x - self.mean) / self.std)
+
+
+class AcousticHead(nn.Module):
+    """Training-only auxiliary predictor of interpretable speech characteristics from z (not deployed)."""
+
+    def __init__(self, input_dim: int = 128, output_dim: int = 3):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(input_dim, 64), nn.GELU(), nn.Linear(64, output_dim))
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.net(z)
+
+
 class _GRL(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, lam):

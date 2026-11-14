@@ -26,10 +26,12 @@ def read_16k(path: str, t0: float | None = None, t1: float | None = None) -> np.
     import soundfile as sf
     from scipy.signal import resample_poly
 
-    sr = sf.info(path).samplerate
-    start = 0 if t0 is None else int(round(t0 * sr))
-    stop = None if t1 is None else int(round(t1 * sr))
-    x, _ = sf.read(path, start=start, stop=stop, dtype="float32", always_2d=True)
+    with sf.SoundFile(path) as f:                     # ONE file open (each open is slow on a Drive mount)
+        sr = f.samplerate
+        start = 0 if t0 is None else int(round(t0 * sr))
+        stop = f.frames if t1 is None else min(f.frames, int(round(t1 * sr)))
+        f.seek(start)
+        x = f.read(max(0, stop - start), dtype="float32", always_2d=True)
     x = x.mean(1)                                     # downmix (no-op for mono)
     if sr != SR:
         g = gcd(sr, SR)
@@ -131,49 +133,87 @@ def main() -> None:  # pragma: no cover - Colab entry point
     ap.add_argument("--out", required=True)
     ap.add_argument("--noise-index", required=True, help="json from data_prep.split_noise")
     ap.add_argument("--batch", type=int, default=64)
-    ap.add_argument("--shard", type=int, default=1000)
+    # windows per checkpoint shard. Spec says 1000, but G0 = 200 windows was then ONE shard that the watchdog killed
+    # before it was written (nothing saved, every retry restarted). 100 windows = 800 clips: lose at most ~1 min.
+    ap.add_argument("--shard", type=int, default=100)
     ap.add_argument("--limit", type=int, default=0, help="G0 smoke: windows to process")
+    ap.add_argument("--path-map", action="append", default=[], metavar="OLD=NEW",
+                    help="rewrite audio/noise path prefixes, e.g. Drive -> local disk (repeatable)")
+    ap.add_argument("--io-only", action="store_true",
+                    help="CPU profiling of the data path (read + resample + augment), no model, no GPU, no ledger")
+    ap.add_argument("--keep-runtime", action="store_true",
+                    help="don't unassign the runtime when THIS stage ends (chain stages: G1 --keep-runtime && G2). "
+                         "Still metered: ledger row, heartbeat and the kill-rule watchdog all stay active")
     a = ap.parse_args()
 
+    import json
+    import time
+    from contextlib import nullcontext
+
+    remap = [kv.split("=", 1) for kv in a.path_map]
+    fix = lambda p: next((p.replace(o, n, 1) for o, n in remap if p.startswith(o)), p)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     man = pd.read_parquet(a.manifest)
     if a.limit:
         man = man.head(a.limit)
+    man["src_file"] = man.src_file.map(fix)
+    idx = {k: [fix(p) for p in v] for k, v in json.load(open(a.noise_index)).items()}
+    missing = [p for p in man.src_file.drop_duplicates().head(20).tolist() + sum(idx.values(), [])[:20]
+               if not Path(p).exists()]
+    if missing:
+        raise SystemExit(f"{len(missing)} input files not found, e.g. {missing[0]} (check --path-map / local copy)")
     copies = {"G0": ["clean", "train", "test"], "G1": ["clean", "train"], "G2": ["test"],
               "G3": [], "G4": ["clean", "train", "test"]}[a.stage]
-    dev = "cuda"
-    import time
-    n_done, t_run = 0, None
-    with budget.stage(a.stage, out.parent):  # ledger + watchdog + unassign in finally
-        print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NONE - aborting")
-        assert torch.cuda.is_available(), "no GPU: switch the runtime to an L4/T4 first"
-        model = load_wavlm(device=dev)
+    dev = "cpu" if a.io_only else "cuda"
+    n_done = 0
+    clock = {"read": 0.0, "augment": 0.0, "model": 0.0}
+    # --io-only never holds a GPU, so it is not metered; real stages always go through the ledger + watchdog
+    stage_ctx = (nullcontext() if a.io_only else
+                 budget.stage(a.stage, out.parent, **({"unassign_on_exit": False} if a.keep_runtime else {})))
+    with stage_ctx:
+        if not a.io_only:
+            print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NONE - aborting")
+            assert torch.cuda.is_available(), "no GPU: switch the runtime to an L4/T4 first"
+            model = load_wavlm(device=dev)
         t_run = time.time()
-        aug = augment.Augmenter(a.noise_index, device=dev)
+        aug = augment.Augmenter(idx, device=dev)
         for s0 in range(0, len(man), a.shard):
             shard_id = f"{a.stage}_{s0 // a.shard:04d}"
-            if shard_done(out, shard_id):
+            if not a.io_only and shard_done(out, shard_id):
                 print(f"{shard_id}: already complete, skipping", flush=True)
                 continue  # resumable: skip finished shards (both files present, written atomically)
             rows, feats = [], []
             chunk = man.iloc[s0:s0 + a.shard]
             jobs = [(r, c) for _, r in chunk.iterrows() for c in aug.copy_plan(copies)]
-            for b0 in range(0, len(jobs), a.batch):
+            seg_cache: dict[str, np.ndarray] = {}            # each window is read ONCE for all its copies
+            for bi, b0 in enumerate(range(0, len(jobs), a.batch)):
                 batch = jobs[b0:b0 + a.batch]
                 wavs, meta = [], []
-                for r, (kind, idx, snr) in batch:
-                    seg = read_16k(r.src_file, r.t0, r.t1)      # file-rate offsets, resampled to 16 kHz
-                    wavs.append(torch.from_numpy(seg).to(dev))
-                    meta.append((r.window_id, kind, idx, snr))
+                t = time.time()
+                for r, (kind, cidx, snr) in batch:
+                    if r.window_id not in seg_cache:
+                        seg_cache = {r.window_id: read_16k(r.src_file, r.t0, r.t1)} | (
+                            seg_cache if len(seg_cache) < 32 else {})
+                    wavs.append(torch.from_numpy(seg_cache[r.window_id]).to(dev))
+                    meta.append((r.window_id, kind, cidx, snr))
+                clock["read"] += time.time() - t; t = time.time()
                 wavs, envs = aug.apply(wavs, meta)
-                feats.append(layer_means(model, [w.cpu().numpy() for w in wavs], device=dev, dtype=torch.bfloat16))
+                clock["augment"] += time.time() - t; t = time.time()
+                if not a.io_only:
+                    feats.append(layer_means(model, [w.cpu().numpy() for w in wavs], device=dev, dtype=torch.bfloat16))
+                clock["model"] += time.time() - t
                 rows += [dict(window_id=m[0], copy=m[1], copy_idx=m[2], snr_db=m[3], env=e)
                          for m, e in zip(meta, envs)]
-            write_shard(out, shard_id, np.concatenate(feats).astype(np.float16), pd.DataFrame(rows))
-            n_done += len(rows)
-            print(f"{shard_id}: {n_done} clips, {n_done / (time.time() - t_run):.1f} clips/s "
-                  f"(G0 rule: need >= 20)", flush=True)
+                n_done += len(batch)
+                if bi % 5 == 0:   # progress within a minute, not only at the end of a shard
+                    tot = sum(clock.values()) or 1e-9
+                    print(f"  {n_done} clips | {n_done / (time.time() - t_run):.1f} clips/s | time in read "
+                          f"{clock['read'] / tot:.0%}, augment {clock['augment'] / tot:.0%}, model {clock['model'] / tot:.0%}"
+                          f"{'' if a.io_only else ' | G0 rule: need >= 20 clips/s'}", flush=True)
+            if not a.io_only:
+                write_shard(out, shard_id, np.concatenate(feats).astype(np.float16), pd.DataFrame(rows))
+            print(f"{shard_id}: {n_done} clips, {n_done / (time.time() - t_run):.1f} clips/s overall", flush=True)
 
 
 if __name__ == "__main__":

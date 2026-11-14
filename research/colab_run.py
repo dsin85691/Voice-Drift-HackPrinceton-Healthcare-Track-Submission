@@ -34,6 +34,21 @@ subprocess.run([sys.executable, "-m", "research.extract", "--stage", STAGE, "--l
                 "--manifest", f"{VD}/manifest.parquet", "--noise-index", f"{VD}/noise_index.json",
                 "--out", f"{VD}/feats"], check=True)
 
+# %% L. LIGHTWEIGHT PROJECTION RUN (projection-head spec v0.1) - the fast path, replaces G1/G2/T1 for the demo
+# L-a (CPU runtime, once): pack audio into two files on Drive
+#   !tar -cf data/androids_clips.tar -C data/androids/Androids-Corpus Interview-Task/audio_clip
+#   !tar -cf data/noise_subset.tar -C data noise_subset
+# L-b (L4 runtime): unpack to local disk, then extract 480 windows x 5 views (~2,400 clips) in the background
+#   !mkdir -p /content/data/androids_clips && tar -xf data/androids_clips.tar -C /content/data/androids_clips && tar -xf data/noise_subset.tar -C /content/data
+#   PM = ("--path-map /content/drive/MyDrive/vd/repo/data/androids/Androids-Corpus=/content/data/androids_clips "
+#         "--path-map /content/drive/MyDrive/vd/repo/data/noise_subset=/content/data/noise_subset")
+#   !nohup python -m research.lite.extract --manifest manifest.parquet --noise-index noise_index.json --out lite_feats {PM} > lite_feats.log 2>&1 &
+#   !tail -3 lite_feats.log          # after ~1 min: clips/s; stop with  !pkill -f research.lite.extract
+# L-c (any runtime, minutes): train B1 + P1, evaluate B0/B1/P1, report, plots, checkpoints, dashboard export
+#   from research.lite import train as LT
+#   res, runs, adir = LT.run_all("lite_feats", out_dir="artifacts", version=1, layer=6)
+#   -> reports/lite_report.md, reports/lite_plots.png, reports/checkpoints/{B1,P1}.pt, artifacts/v1/
+
 # %% 3. Train + evaluate + export, ON GPU (T1). Switch to an L4/T4 runtime first.
 # This is OUTSIDE the spec's GPU plan (G0-G3): it spends reserve hours, so get the team lead's OK.
 # The budget wrapper meters it as stage "T1" (planned 0.5 h, kill 0.75 h) and UNASSIGNS the runtime on exit,

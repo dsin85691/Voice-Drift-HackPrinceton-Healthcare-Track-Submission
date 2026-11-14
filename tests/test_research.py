@@ -153,6 +153,16 @@ def test_budget_ledger(tmp_path):
             pass
 
 
+def test_chained_stage_keeps_runtime_but_still_closes_row(tmp_path):
+    called = []
+    with budget.stage("G1", tmp_path, unassign=lambda: called.append(1), unassign_on_exit=False):
+        pass
+    assert called == [] and budget.read_rows(tmp_path)[0]["end_utc"]        # metered, not unassigned
+    with budget.stage("G2", tmp_path, unassign=lambda: called.append(1)):    # the last stage unassigns
+        pass
+    assert called == [1]
+
+
 def test_disconnected_stage_stops_counting_and_is_closed(tmp_path):
     from datetime import timedelta
     import csv

@@ -27,7 +27,9 @@ HEARTBEAT_S = 30
 RULES = {"G0": (0.25, 0.25), "G1": (0.75, 1.0), "G2": (0.5, 0.75), "G3": (0.25, 0.25), "G4": (0.25, 0.25),
          # T1: GPU training/eval (step 6). NOT in the spec's plan: it draws on the 3.0 h reserve, which the
          # spec says needs a team decision. Metered like any other stage.
-         "T1": (0.5, 0.75)}
+         "T1": (0.5, 0.75),
+         # L1: lightweight projection experiment extraction (~2,400 clips): projection-head spec v0.1
+         "L1": (0.25, 0.5)}
 FIELDS = ["stage", "start_utc", "end_utc", "gpu_name", "last_seen_utc", "note"]
 _lock = threading.Lock()
 
@@ -141,7 +143,10 @@ def _unassign() -> None:  # pragma: no cover - Colab only
 
 
 @contextlib.contextmanager
-def stage(name: str, drive: str | Path, unassign=_unassign, heartbeat_s: float = HEARTBEAT_S):
+def stage(name: str, drive: str | Path, unassign=_unassign, heartbeat_s: float = HEARTBEAT_S,
+          unassign_on_exit: bool = True):
+    """unassign_on_exit=False only for chaining stages in one session (the LAST stage must unassign).
+    The watchdog still unassigns on a kill-rule or total-budget breach either way."""
     drive = Path(drive)
     closed = close_stale(drive)
     if closed:
@@ -181,7 +186,8 @@ def stage(name: str, drive: str | Path, unassign=_unassign, heartbeat_s: float =
         done.set()
         end = _now().isoformat()
         _update_row(drive, start.isoformat(), end_utc=end, last_seen_utc=end)
-        unassign()
+        if unassign_on_exit:
+            unassign()
 
 
 def main() -> None:

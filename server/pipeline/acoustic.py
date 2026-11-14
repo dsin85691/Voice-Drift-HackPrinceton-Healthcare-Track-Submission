@@ -92,6 +92,21 @@ def spectral_embeddings(x: np.ndarray, speech_mask: np.ndarray | None) -> tuple[
 
 
 # ----------------------------------------------------------------------------- WavLM path
+def load_projection(adir):
+    """The deployed projection: the lightweight head (projection_head.pt, no diagnosis labels) if present,
+    else the M3 projector (projector.pt). Always loaded with weights_only=True."""
+    import torch
+
+    from research.heads import ProjectionHead, Projector
+
+    if (adir / "projection_head.pt").exists():
+        m, f = ProjectionHead(), adir / "projection_head.pt"
+    else:
+        m, f = Projector(), adir / "projector.pt"
+    m.load_state_dict(torch.load(f, map_location="cpu", weights_only=True))
+    return m.eval()
+
+
 class _WavLMEncoder:
     def __init__(self, adir, dm_meta: dict):
         import torch
@@ -104,9 +119,7 @@ class _WavLMEncoder:
         self.dev = "cuda" if torch.cuda.is_available() else "cpu"
         self.layer = int(dm_meta["layer"])
         self.model = load_wavlm(cfg.models["wavlm"], cfg.models["wavlm_revision"], self.dev)
-        self.proj = Projector()
-        self.proj.load_state_dict(torch.load(adir / "projector.pt", map_location="cpu", weights_only=True))
-        self.proj.eval()
+        self.proj = load_projection(adir)
         self.f_d = None
         if (adir / "disease_head.pt").exists():
             self.f_d = torch.nn.Linear(128, 1)
@@ -130,12 +143,12 @@ class AcousticBranch:
         self._enc: _WavLMEncoder | None = None
         cfg = get_config()
         adir = resolve(cfg.artifacts["dir"])
-        cands = sorted(adir.glob("v*"))
-        if cands and (cands[-1] / "projector.pt").exists():
+        cands = sorted(adir.glob("v*"), key=lambda p: int(p.name[1:]) if p.name[1:].isdigit() else -1)
+        if cands and ((cands[-1] / "projector.pt").exists() or (cands[-1] / "projection_head.pt").exists()):
             try:
                 meta = json.loads((cands[-1] / "drift_config.json").read_text())
                 self._enc = _WavLMEncoder(cands[-1], meta)
-                self.encoder_name = f"wavlm-base+P_M3@{cands[-1].name}"
+                self.encoder_name = f"wavlm-base+{meta.get('head', 'P_M3')}@{cands[-1].name}"
             except Exception as e:  # missing torch/transformers/weights
                 log.warning("WavLM encoder unavailable (%s) - using spectral fallback", e)
 

@@ -31,6 +31,38 @@ The app degrades per component instead of failing (spec section 11). `/api/healt
 **Important:** without ASR the lexicon safety screen has nothing to scan. Install faster-whisper before any
 live use.
 
+## Lightweight projection head (fast path, no diagnosis labels)
+
+`research/lite/` implements the projection-head spec v0.1. A small head on frozen WavLM learns to stay the
+**same under recording nuisances** (invariance + variance + covariance terms, VICReg-style) while still
+**predicting interpretable speech characteristics** (pause fraction, pitch variability, speech-run rate). That is
+P1. B1 is the same without the acoustic term, and B0 is raw WavLM. It needs about 2,400 clips instead of G1/G2's
+21,000, and trains in minutes.
+
+- **Data:** 24 speakers × 20 consecutive windows. Speakers are split before anything is computed: 25% are held
+  out for evaluation, and early stopping uses a separate inner split of the training speakers.
+- **Five views per window:**
+  1. clean;
+  2. and 3. two independent nuisance views (noise or babble at 10–30 dB, simulated reverb, mild microphone EQ;
+     no pitch or time changes);
+  4. a view with held-out noise files (Experiment A);
+  5. a **synthetic** extra-pauses view, made by inserting the recording's own room tone after each speech run
+     (Experiment B).
+- **Evaluation (held-out speakers):** each model is judged against its own normal variation, i.e. distances
+  between a speaker's clean windows. The report gives the nuisance false-alert rate, change sensitivity, AUROC for
+  change vs nuisance, and sensitivity at a 10% nuisance false-alert rate, with speaker-bootstrap CIs. It also
+  covers effective rank and feature spread (collapse checks), per-term loss curves, parameter count and runtime.
+- **Output:** `reports/lite_report.md` answers the spec's six questions from the numbers. `artifacts/vN/` holds
+  `projection_head.pt` and drift and window thresholds, which the server loads automatically.
+- **Deviations from the spec:**
+  - The invariance term is averaged over the 128 dimensions instead of summed (`inv_reduction="sum"` restores
+    it). Summed, it is ~128× the variance term, the imbalance that stopped M3 from learning.
+  - The head has an input standardizer.
+  - Experiment B is synthetic until real slow or paused recordings exist.
+  - "Speaking rate" is replaced by speech-run rate, since Androids has no transcripts.
+
+**Run it:** see section L in `research/colab_run.py`.
+
 ## Inside a recording: raw vs projected, window by window
 
 The main demo visualization (`server/pipeline/windows.py`, `#/windows/<checkin>` and the `?demo=1#/lab` Replay

@@ -6,6 +6,7 @@ HELD-OUT noise files and real RIRs at 20/10/5 dB and carry env = -1 (never used 
 """
 from __future__ import annotations
 
+import functools
 import json
 import random
 
@@ -61,13 +62,18 @@ def phone_sim(x: torch.Tensor, sr: int = SR) -> torch.Tensor:
     return torch.sign(q) * ((1 + mu) ** q.abs() - 1) / mu * peak
 
 
+@functools.lru_cache(maxsize=4096)
+def _duration(path: str) -> float:
+    """sf.info opens the file; on a Drive mount that costs ~0.1-0.5 s, so do it once per noise file."""
+    import soundfile as sf
+    return sf.info(path).duration
+
+
 def _load(path: str, n: int, rng: random.Random, device) -> torch.Tensor:
     """A random n-sample (16 kHz) excerpt of a noise file, at any stored sample rate."""
-    import soundfile as sf
-
     from .extract import read_16k
 
-    dur = sf.info(path).duration
+    dur = _duration(path)
     need = n / SR
     t0 = rng.uniform(0, max(0.0, dur - need))
     x = read_16k(path, t0, min(dur, t0 + need))[:n]
