@@ -141,14 +141,13 @@ class AcousticBranch:
     def __init__(self):
         self.encoder_name = "spectral-fallback"
         self._enc: _WavLMEncoder | None = None
-        cfg = get_config()
-        adir = resolve(cfg.artifacts["dir"])
-        cands = sorted(adir.glob("v*"), key=lambda p: int(p.name[1:]) if p.name[1:].isdigit() else -1)
-        if cands and ((cands[-1] / "projector.pt").exists() or (cands[-1] / "projection_head.pt").exists()):
+        from .drift import artifact_dir
+        chosen = artifact_dir()          # same folder as the drift constants (config artifacts.version)
+        if chosen is not None and ((chosen / "projector.pt").exists() or (chosen / "projection_head.pt").exists()):
             try:
-                meta = json.loads((cands[-1] / "drift_config.json").read_text())
-                self._enc = _WavLMEncoder(cands[-1], meta)
-                self.encoder_name = f"wavlm-base+{meta.get('head', 'P_M3')}@{cands[-1].name}"
+                meta = json.loads((chosen / "drift_config.json").read_text())
+                self._enc = _WavLMEncoder(chosen, meta)
+                self.encoder_name = f"wavlm-base+{meta.get('head', 'P_M3')}@{chosen.name}"
             except Exception as e:  # missing torch/transformers/weights
                 log.warning("WavLM encoder unavailable (%s) - using spectral fallback", e)
 
@@ -179,9 +178,8 @@ class CohortRisk:
     def __init__(self, adir=None):
         self.cal = None
         if adir is None:
-            cands = sorted(resolve(get_config().artifacts["dir"]).glob("v*"),
-                           key=lambda p: int(p.name[1:]) if p.name[1:].isdigit() else -1)
-            adir = cands[-1] if cands else None
+            from .drift import artifact_dir
+            adir = artifact_dir()        # the deployed version only, never a newer folder sitting next to it
         if adir is not None and (adir / "calibration.json").exists():
             self.cal = json.loads((adir / "calibration.json").read_text())
 

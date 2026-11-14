@@ -89,6 +89,24 @@ P1. B1 is the same without the acoustic term, and B0 is raw WavLM. It needs abou
   request the person sees on Home; the flag's status is unchanged. Closing or dismissing a flag needs a written
   reason. Nothing is ever delivered outside the app.
 
+## One-click demo and smoke test (hackathon backlog)
+
+- **Bundled audio** is in `server/demo_assets/` (tracked; about 9 MB). It is the standard passage read by the
+  offline Windows text-to-speech voice "Microsoft David": 5 baseline readings, one normal reading (used by the
+  noise demo) and one slower reading (the sample). It is **synthetic speech**, labelled as such wherever it
+  appears, and not a person's voice.
+- **Analyze sample recording** (Home and Results) runs that reading through the normal check-in pipeline
+  (`POST /api/demo/sample`). The first click builds the sample baseline from the 5 readings.
+- **Elevated example:** comes from the seeded `p_drift` profile, which is marked as illustrative. The boundary
+  is not tuned to make the sample alert.
+- **If WavLM can't load** (`transformers` missing), the app uses the spectral fallback features. It then also
+  ignores trained drift artifacts, which were fitted to WavLM embeddings and would give meaningless scores.
+- **Output contract:** every result carries `source`, `quality_status`, `drift_score` (× boundary),
+  `drift_threshold` (1.0), `drift_status` (`within_range`, `elevated` or `unavailable`; elevated means strictly
+  above 1.0), `review_required` (read from the review engine's stored decision) and `model_version`.
+- **Smoke test:** `python tools/smoke.py --base <url> [--reset]` runs scenarios A–D against a running
+  deployment and prints the scenario E browser checklist.
+
 ## Aggregate experiment (the Results page)
 
 `research/lite/aggregate.py` writes `results/aggregate.json`, which the Results and Home pages read. It compares B0,

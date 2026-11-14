@@ -28,14 +28,23 @@ class DriftModel:
         return (v - self.pca_mean) @ self.pca_components.T
 
 
+def artifact_dir():
+    """THE deployed artifact folder: artifacts.version from config ("auto" = newest v*). Every loader (drift
+    constants, encoder/projection, cohort calibration) must use this, so they can never mix versions."""
+    cfg = get_config()
+    adir = resolve(cfg.artifacts["dir"])
+    ver = str(cfg.artifacts.get("version", "auto"))
+    if ver != "auto":
+        return adir / ver
+    cands = sorted(adir.glob("v*"), key=lambda p: int(p.name[1:]) if p.name[1:].isdigit() else -1)
+    return cands[-1] if cands else None
+
+
 def load_drift_model(raw: bool = False) -> DriftModel:
     """raw=True loads the raw-z drift constants (for the robustness toggle); falls back to the head's."""
     cfg = get_config()
     d = cfg.drift
-    adir = resolve(cfg.artifacts["dir"])
-    ver = cfg.artifacts["version"]
-    cands = sorted(adir.glob("v*"), key=lambda p: int(p.name[1:]) if p.name[1:].isdigit() else -1)
-    chosen = (adir / ver) if ver != "auto" else (cands[-1] if cands else None)
+    chosen = artifact_dir()
     pca_file = "pca_raw.npz" if raw else "pca.npz"
     if chosen and (chosen / "drift_config.json").exists() and (chosen / pca_file).exists():
         dc = json.loads((chosen / "drift_config.json").read_text())

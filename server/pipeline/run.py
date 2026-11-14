@@ -61,6 +61,12 @@ class Runtime:
         self.dm = drift.load_drift_model()
         self.dm_raw = drift.load_drift_model(raw=True)
         self.acoustic = acoustic.AcousticBranch()
+        if "fallback" in (self.acoustic.encoder_name or "") and self.dm.version != "fallback":
+            # Trained drift constants (PCA, tau) were fitted to WavLM/projection embeddings. Applying them to the
+            # spectral fallback features would produce scores that look calibrated but mean nothing.
+            log.warning("encoder is %s: ignoring trained drift artifacts %s, using the fallback drift space",
+                        self.acoustic.encoder_name, self.dm.version)
+            self.dm = self.dm_raw = drift.fallback_model()
         self.reference = acoustic.ReferenceRisk()
         self.cohort = acoustic.CohortRisk()
         self.asr = asr.ASR()
@@ -97,7 +103,8 @@ class Runtime:
 
     # ------------------------------------------------------------------ the pipeline
     def process(self, cid: str, pid: str, audio_path: Path, prompt_id: str = "default",
-                interventions: list | None = None, verification_of: str | None = None) -> None:
+                interventions: list | None = None, verification_of: str | None = None,
+                meta: dict | None = None) -> None:
         """Runs a full check-in. Always deletes the audio file, even on error.
         interventions: known noise events marked during recording (seconds from start), for the visualization."""
         t_start = time.perf_counter()
@@ -106,14 +113,15 @@ class Runtime:
         ms = lambda t: int((time.perf_counter() - t) * 1000)
         try:
             try:
-                self._process(cid, pid, audio_path, emit, lat, t_start, ms, interventions, prompt_id, verification_of)
+                self._process(cid, pid, audio_path, emit, lat, t_start, ms, interventions, prompt_id, verification_of,
+                              meta)
             except Exception as e:  # never leave the client hanging
                 if isinstance(e, decode.DecodeError):
                     log.warning("check-in %s: %s", cid, str(e)[:120])
                 else:
                     log.exception("check-in %s failed", cid)
                 store.log_event(cid, "error", 0, repr(e)[:300])
-                self._store_failure(cid, pid, repr(e), prompt_id, verification_of)
+                self._store_failure(cid, pid, repr(e), prompt_id, verification_of, meta)
                 emit("result", self._result(cid))
         finally:
             try:
@@ -126,7 +134,7 @@ class Runtime:
             return scoring.result_json(s.get(store.Checkin, cid))
 
     def _store_failure(self, cid: str, pid: str, err: str, prompt_id: str = "default",
-                       verification_of: str | None = None) -> None:
+                       verification_of: str | None = None, meta: dict | None = None) -> None:
         from .. import protocol
         reason = "unreadable audio" if "unreadable" in err else "processing error"
         with store.session() as s:
@@ -136,7 +144,7 @@ class Runtime:
                                              "clipping": 0, "reasons": [reason],
                                              "reason_codes": [quality.REASON_CODES[reason]]},
                                     versions={"git": self.git},
-                                    extra={"error": err, "protocol": protocol.meta(prompt_id),
+                                    extra={"error": err, "protocol": protocol.meta(prompt_id), **(meta or {}),
                                            **({"verification_of": verification_of, "checkin_type": "verification"}
                                               if verification_of else {})}))
                 s.commit()
@@ -179,7 +187,7 @@ class Runtime:
         return out
 
     def _process(self, cid, pid, audio_path, emit, lat, t_start, ms, interventions=None, prompt_id="default",
-                 verification_of=None):
+                 verification_of=None, meta=None):
         from .. import protocol
         from . import evidence
         cfg = self.cfg
@@ -226,9 +234,17 @@ class Runtime:
                 emit("stage", {"stage": "evidence", "ms": lat["llm"], "data": {}})
                 return r
 
-            fa, fl = self.pool.submit(acoustic_job), self.pool.submit(llm_job)
+            # A fixed reading passage says nothing about how the person feels: never mine it for symptom language.
+            reading = protocol.get(prompt_id)["task_type"] == "read_speech"
+            fa = self.pool.submit(acoustic_job)
+            fl = None if reading else self.pool.submit(llm_job)
             emb, dam = fa.result()
-            lang = fl.result()
+            if reading:
+                emit("stage", {"stage": "evidence", "ms": 0, "data": {"skipped": True}})
+                lang = {"available": False, "evidence": [], "evidence_dropped": 0, "summary": "",
+                        "safety_flag": False, "not_applicable": "reading passage: no symptom-language analysis"}
+            else:
+                lang = fl.result()
         else:
             for st in ("scores", "evidence"):
                 emit("stage", {"stage": st, "ms": 0, "data": {"skipped": True}})
@@ -246,11 +262,13 @@ class Runtime:
         )
         ck.extra = {"evidence_dropped": (lang or {}).get("evidence_dropped", 0),
                     "evidence_available": bool(lang and lang["available"]) or not scored,
+                    "language_analysis": (lang or {}).get("not_applicable") or "performed",
                     "summary": (lang or {}).get("summary", ""),
                     "window_count": emb.window_count if emb else 0,
                     "protocol": protocol.meta(prompt_id)}
         if verification_of:
             ck.extra.update(verification_of=verification_of, checkin_type="verification")
+        ck.extra.update(meta or {})              # e.g. {"source": "demo", "synthetic_voice": true}
         if scored:   # same extraction for every recording; rejected recordings carry no measurements at all
             ck.extra["acoustic"] = evidence.measure(q.speech_mask, words_timing, tr.available)
         if emb is not None:   # clinician-only cohort reference; dropped for SAFETY by result_json

@@ -90,6 +90,13 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         return rt().dm, rt().dm_raw
     app.state.holder = holder
 
+    def pmode(p) -> str:
+        if p.simulated:
+            return "synthetic_demo"
+        if p.id == (get_config().demo.get("sample") or {}).get("profile"):
+            return "demo_synthetic_voice"
+        return "real_recording"
+
     # ------------------------------------------------------------------ health
     @app.get("/api/health")
     def health():
@@ -208,6 +215,18 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    def review_info(s, ck) -> dict:
+        """Review state of one check-in, read from the review-flag engine's stored decisions (never re-derived)."""
+        ev = s.exec(select(store.MonitoringEvaluation).where(store.MonitoringEvaluation.checkin_id == ck.id)).first()
+        fe = s.exec(select(store.FlagEvidence).where(store.FlagEvidence.checkin_id == ck.id,
+                                                    store.FlagEvidence.role == "qualifying")).first()
+        flag = s.get(store.ReviewFlag, fe.flag_id) if fe else None
+        st = (ev.result if ev else {}).get("monitoring_state")
+        return {"review_required": bool(flag) or st == "REVIEW_ELIGIBLE", "monitoring_state": st,
+                "review_flag": {"flag_id": flag.flag_id, "status": flag.status,
+                                "state": "pending" if flag.status in ("OPEN", "ACKNOWLEDGED") else "reviewed"}
+                if flag else None}
+
     @app.get("/api/checkins/{cid}")
     def get_checkin(cid: str, role: str = "clinician"):
         with store.session() as s:
@@ -215,6 +234,8 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             if not ck:
                 raise HTTPException(404, "unknown check-in")
             res = scoring.result_json(ck)
+            if ck.status != "SAFETY":
+                res.update(review_info(s, ck))
         return scoring.patient_view(res) if role == "patient" else res
 
     # ------------------------------------------------------------------ clinician
@@ -231,11 +252,11 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 if any(a.kind == "SAFETY" for a in open_alerts):
                     status = "SAFETY"
                 open_flags = s.exec(select(store.ReviewFlag).where(store.ReviewFlag.patient_id == p.id,
-                                                                   store.ReviewFlag.status.in_(monitoring.ACTIVE))).all()
+                                                                   store.ReviewFlag.status.in_(monitoring.PENDING))).all()
                 last_eval = s.exec(select(store.MonitoringEvaluation).where(store.MonitoringEvaluation.patient_id == p.id)
                                    .order_by(store.MonitoringEvaluation.created_at.desc())).first()
                 out.append({"id": p.id, "display_name": p.display_name, "simulated": p.simulated, "status": status,
-                            "data_mode": "synthetic_demo" if p.simulated else "real_recording",
+                            "data_mode": pmode(p),
                             "last_checkin": last.created_at.isoformat() + "Z" if last else None,
                             "last_quality": (last.quality or {}).get("verdict") if last else None,
                             "open_alerts": len(open_alerts) + len(open_flags), "open_review_flags": len(open_flags),
@@ -266,10 +287,17 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                                                       "timing", "timing_chips", "reference_risk", "cohort_risk", "has_window_analysis", "evidence",
                                                       "summary", "simulated", "transcript", "safety", "protocol",
                                                       "checkin_type", "verification_of", "verification", "comparison",
-                                                      "context", "acoustic_features", "acoustic_summary", "analysis")})
+                                                      "context", "acoustic_features", "acoustic_summary", "analysis",
+                                                      "source", "synthetic_voice", "drift_score", "drift_threshold",
+                                                      "drift_status", "speaking_rate_change_pct",
+                                                      "pause_duration_change_pct", "pause_measure")})
+                if c.status != "SAFETY":
+                    rows[-1].update(review_info(s, c))
                 rows[-1]["acted"] = (c.extra or {}).get("acted", False)
                 rows[-1]["environment"] = (c.extra or {}).get("environment")
-                rows[-1]["data_mode"] = "synthetic_demo" if (c.extra or {}).get("simulated") else "real_recording"
+                rows[-1]["data_mode"] = ("synthetic_demo" if (c.extra or {}).get("simulated") else
+                                         "demo_synthetic_voice" if (c.extra or {}).get("synthetic_voice") else
+                                         "real_recording")
                 rows[-1]["baseline_progress"] = (c.extra or {}).get("baseline_progress")
             tau = (drift_space(p.simulated)[0]).tau
             # a reviewer's in-app repeat request, open until the person's next check-in
@@ -282,7 +310,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 baseline = {"n": bl.n, "frozen_at": bl.frozen_at.isoformat() + "Z", "timing_mu": bl.timing_mu,
                             "timing_sigma": bl.timing_sigma, "tau": tau}
             return {"patient": {"id": p.id, "display_name": p.display_name, "simulated": p.simulated,
-                                "data_mode": "synthetic_demo" if p.simulated else "real_recording"},
+                                "data_mode": pmode(p)},
                     "baseline": baseline, "tau": tau, "checkins": rows, "repeat_requested": repeat_requested,
                     "baseline_n_required": int(get_config().drift["baseline_n"]),
                     "drift_level": "session",
@@ -434,7 +462,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         """In-app indicator for the (demo) review queue. Minimal payloads only."""
         with store.session() as s:
             rows = list(s.exec(select(store.NotificationOutbox).order_by(store.NotificationOutbox.created_at.desc())))
-            active = {f.flag_id for f in s.exec(select(store.ReviewFlag).where(store.ReviewFlag.status.in_(monitoring.ACTIVE)))}
+            active = {f.flag_id for f in s.exec(select(store.ReviewFlag).where(store.ReviewFlag.status.in_(monitoring.PENDING)))}
             return {"mode": get_config().monitoring["notification_mode"], "external_delivery": False,
                     "unresolved": len({n.flag_id for n in rows if n.flag_id in active and n.channel == "in_app"}),
                     "items": [{"flag_id": n.flag_id, "subject": n.payload.get("subject"), "body": n.payload.get("body"),
@@ -455,11 +483,96 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         with store.session() as s:
             bl = s.get(store.Baseline, d["profile"])
             prof_ready = bool(bl and bl.frozen_at)
-        return {"aggregate": load("aggregate"), "demo_snapshot": load("demo_snapshot"),
-                "demo": {"clip_present": clip.exists(), "profile": d["profile"], "profile_baseline_ready": prof_ready,
+        agg = load("aggregate")
+        rdir = (ROOT / cfg.results["aggregate"]).parent
+        arts = {}
+        for name in ("calibration", "evaluation_metrics", "evaluation_metadata"):
+            p = rdir / f"{name}.json"
+            arts[name] = json.loads(p.read_text()) if p.exists() else None
+        gen = {k: (v or {}).get("generated_at") for k, v in arts.items()}
+        calib_arts = {"present": all(arts.values()),
+                      # never pair numbers from different runs: every artifact must carry the aggregate's timestamp
+                      "consistent": bool(agg) and all(g == agg.get("generated_at") for g in gen.values()),
+                      "generated_at": gen, "source_commit": (arts["evaluation_metadata"] or {}).get("source_commit"),
+                      "calibration": arts["calibration"]}
+        sc = d.get("sample") or {}
+        sample_ok = bool(sc) and all((ROOT / f).exists() for f in [*sc.get("baseline", []), sc.get("recording", "-")])
+        auto_baseline = d["profile"] == sc.get("profile") and sample_ok
+        return {"aggregate": agg, "demo_snapshot": load("demo_snapshot"), "calibration_artifacts": calib_arts,
+                "sample": {"present": sample_ok, "profile": sc.get("profile"), "display_name": sc.get("display_name"),
+                           "synthetic_voice": True},
+                "demo": {"clip_present": clip.exists(), "profile": d["profile"],
+                         "profile_baseline_ready": prof_ready or auto_baseline, "baseline_auto": auto_baseline,
                          "noise": d["noise"], "snr_db": d["snr_db"], "start_s": d["start_s"], "end_s": d["end_s"]},
                 "model": rt().acoustic.encoder_name,
                 "team": list((get_config().get("about") or {}).get("team") or [])}
+
+    # ------------------------------------------------------------------ bundled sample (backlog VD-01)
+    SAMPLE_META = {"source": "demo", "synthetic_voice": True}
+    sample_lock = threading.Lock()
+
+    def sample_cfg() -> dict:
+        return dict(get_config().demo.get("sample") or {})
+
+    def run_clip(pid: str, path: Path) -> str:
+        """Same pipeline as a live check-in, synchronously, on a COPY of a bundled file (process deletes its input)."""
+        import shutil
+        r = rt()
+        cid = store.new_id("c")
+        tmp = r.tmp / f"{cid}{path.suffix}"
+        shutil.copyfile(path, tmp)
+        r.process(cid, pid, tmp, protocol.STANDARD_ID, None, None, dict(SAMPLE_META))
+        return cid
+
+    def ensure_sample_baseline() -> bool:
+        """Build the sample profile's baseline from the bundled baseline readings, once. Returns True if built now."""
+        sc = sample_cfg()
+        pid, need = sc["profile"], int(get_config().drift["baseline_n"])
+        files = [ROOT / f for f in sc["baseline"]]
+        missing = [str(f) for f in files if not f.exists()]
+        if missing:
+            raise HTTPException(409, f"bundled demo audio missing: {missing[0]}")
+        with store.session() as s:
+            bl = s.get(store.Baseline, pid)
+            if bl and bl.frozen_at:
+                return False
+            if s.get(store.Patient, pid) is None:
+                s.add(store.Patient(id=pid, display_name=sc["display_name"], consent_at=store.utcnow(),
+                                    **demo_enrollment()))
+                s.commit()
+            have = len(scoring.baseline_rows(scoring.history(s, pid), need))
+        for f in files[have:need]:
+            run_clip(pid, f)
+        with store.session() as s:
+            bl = s.get(store.Baseline, pid)
+            if not (bl and bl.frozen_at):
+                bad = [c.quality.get("reasons") for c in scoring.history(s, pid) if c.quality.get("verdict") == "REJECT"]
+                raise HTTPException(500, f"sample baseline could not be built (rejected: {bad[:2]})")
+        return True
+
+    @app.post("/api/demo/sample")
+    def demo_sample():
+        """One click (VD-01): analyse the bundled sample recording through the normal check-in pipeline against the
+        sample profile's baseline (built from bundled readings on first use). Synthetic voice; labelled as such."""
+        if not sample_lock.acquire(blocking=False):
+            raise HTTPException(409, "the sample analysis is already running")
+        try:
+            sc = sample_cfg()
+            rec = ROOT / sc["recording"]
+            if not rec.exists():
+                raise HTTPException(409, f"bundled demo audio missing: {sc['recording']}")
+            built = ensure_sample_baseline()
+            cid = run_clip(sc["profile"], rec)
+            with store.session() as s:
+                ck = s.get(store.Checkin, cid)
+                res = scoring.result_json(ck)
+                if ck.status != "SAFETY":
+                    res.update(review_info(s, ck))
+            return {"checkin": res, "profile": sc["profile"], "baseline_built_now": built,
+                    "label": "Prerecorded sample: synthetic text-to-speech voice reading the standard passage, "
+                             "analysed live by the same pipeline as real check-ins."}
+        finally:
+            sample_lock.release()
 
     @app.post("/api/demo/run")
     async def demo_run():
@@ -469,10 +582,12 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         r, d = rt(), get_config().demo
         clip = ROOT / d["clip"]
         if not clip.exists():
-            raise HTTPException(409, f"no demo clip at {d['clip']}: add a consented 40-60 s recording there")
+            raise HTTPException(409, f"no demo clip at {d['clip']}")
+        loop = asyncio.get_running_loop()
+        if d["profile"] == sample_cfg().get("profile"):
+            await loop.run_in_executor(None, ensure_sample_baseline)
         tmp = r.tmp / f"{store.new_id('demo')}{clip.suffix}"
         shutil.copyfile(clip, tmp)                      # replay deletes its input; never touch the bundled file
-        loop = asyncio.get_running_loop()
         out = await loop.run_in_executor(None, lambda: r.replay(
             d["profile"], tmp, kind=d["noise"], start_s=float(d["start_s"]), end_s=float(d["end_s"]),
             snr_db=float(d["snr_db"]), seed=int(d["seed"])))

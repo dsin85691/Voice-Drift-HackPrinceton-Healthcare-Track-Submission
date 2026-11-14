@@ -103,17 +103,24 @@ def apply_scoring(s: Session, ck: Checkin, *, vec: np.ndarray | None, vec_raw: n
         d = D.drift_score(dm.project(vec), mu, sg)
         if not np.isfinite(d):
             raise ValueError("non-finite drift score")       # never stored; the check-in fails visibly instead
-        exceeds = d > dm.tau
+        # ONE comparison, on the stored values, so the shown score, boundary and status can never disagree.
+        # Rule: strictly greater than the boundary (a score exactly at the boundary is within range).
+        d_s, tau_s = round(float(d), 6), round(float(dm.tau), 6)
+        exceeds = d_s > tau_s
         w = 1.0 if verdict == "PASS" else float(cfg["warn_weight"])
         confirmed = D.confirmed_drift(scored_hist + [(exceeds, w)], float(cfg["confirm_sum"]), int(cfg["confirm_last"]))
         wc = int(ck.extra.get("window_count", 0))
-        drift_json = {"d": round(d, 3), "tau": round(dm.tau, 3), "exceeds": bool(exceeds), "weight": w,
+        drift_json = {"d": d_s, "tau": tau_s, "exceeds": bool(exceeds), "weight": w,
                       "window_count": wc, "baseline_n": bl.n, "confirmed": bool(confirmed)}
         if timing and any(v is not None for v in _timing_view(timing).values()):
             cur = _timing_view(timing)
             z = D.timing_z(cur, bl.timing_mu, bl.timing_sigma)
             ck.timing = {**timing, "z": z}
             ck.extra["timing_chips"] = D.timing_chips(cur, bl.timing_mu, z)
+            mu_t = bl.timing_mu or {}
+            ck.extra["timing_change_pct"] = {
+                k: (round(100 * (cur[k] - mu_t[k]) / mu_t[k], 1) if cur.get(k) is not None and mu_t.get(k) else None)
+                for k in ("speech_rate", "mean_pause")}
     ck.drift = drift_json
     if ck.timing is None and timing:
         ck.timing = {**timing, "z": {"speech_rate": None, "pause_rate": None, "mean_pause": None}}
@@ -198,7 +205,38 @@ def result_json(ck: Checkin, patient_id: str | None = None) -> dict:
                      if d.get("tau") else
                      {"status": "INCOMPATIBLE_PROTOCOL" if ex.get("comparison") else
                       "NOT_SCORED" if (ck.quality or {}).get("verdict") == "REJECT" else "BASELINE"})
+    r.update(contract(ck))
     return r
+
+
+def _pct(x):
+    return None if x is None else round(100 * x, 1)
+
+
+def contract(ck: Checkin) -> dict:
+    """Backlog VD-02 output contract, derived ONLY from the stored analysis (never recomputed elsewhere).
+    review_required is added by the API from the review-flag engine's stored evaluation."""
+    ex, d, q = ck.extra or {}, ck.drift or {}, ck.quality or {}
+    af = ex.get("acoustic_features") or {}
+    tc = ex.get("timing_change_pct") or {}
+    sr = (af.get("speaking_rate_wpm") or {}).get("relative")
+    pf = (af.get("pause_fraction") or {}).get("relative")
+    status = ("unavailable" if not d.get("tau") else "elevated" if d.get("exceeds") else "within_range")
+    return {
+        "source": ex.get("source") or ("seeded" if ex.get("simulated") else "live"),
+        "synthetic_voice": bool(ex.get("synthetic_voice")),
+        "quality_status": "fail" if q.get("verdict") == "REJECT" else "warning" if q.get("verdict") == "WARN" else "pass",
+        "speech_duration_seconds": q.get("speech_seconds", q.get("speech_s")),
+        "speaking_rate_change_pct": _pct(sr) if sr is not None else tc.get("speech_rate"),
+        "pause_duration_change_pct": _pct(pf) if pf is not None else tc.get("mean_pause"),
+        "pause_measure": "pause_fraction" if pf is not None else ("mean_pause_s" if tc.get("mean_pause") is not None else None),
+        "drift_score": round(d["d"] / d["tau"], 4) if d.get("tau") else None,
+        "drift_score_units": "x session boundary (1.0 = boundary)",
+        "drift_threshold": 1.0 if d.get("tau") else None,
+        "drift_status": status,
+        "drift_rule": "elevated when the session score is strictly greater than the boundary",
+        "model_version": f"{(ck.versions or {}).get('encoder', 'unknown')}|{(ck.versions or {}).get('artifacts', 'unknown')}",
+    }
 
 
 def patient_view(r: dict) -> dict:

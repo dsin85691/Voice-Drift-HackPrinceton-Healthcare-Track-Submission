@@ -19,7 +19,8 @@ from sqlmodel import Session, select
 from . import scoring, store
 from .config import get_config
 
-ACTIVE = ("OPEN", "ACKNOWLEDGED", "REVIEWED")
+ACTIVE = ("OPEN", "ACKNOWLEDGED", "REVIEWED")      # same episode still open: dedups new flags
+PENDING = ("OPEN", "ACKNOWLEDGED")                 # still waiting for a reviewer: what the queue counts
 TRANSITIONS = {  # lifecycle (spec 6.2)
     "acknowledge": ({"OPEN"}, "ACKNOWLEDGED"),
     "review": ({"ACKNOWLEDGED"}, "REVIEWED"),
@@ -286,9 +287,27 @@ def flag_json(f: store.ReviewFlag, s: Session | None = None, detail: bool = Fals
            "reviewed_at": iso(f.reviewed_at), "closed_at": iso(f.closed_at),
            "assigned_reviewer_id": f.assigned_reviewer_id, "summary": f.summary,
            "monitoring_context_id": f.monitoring_context_id}
+    out["review_state"] = "pending" if f.status in PENDING else "reviewed"
     if s is not None:
         ev = list(s.exec(select(store.FlagEvidence).where(store.FlagEvidence.flag_id == f.flag_id)))
         out["supporting_checkins"] = len(ev)
+        # the most recent qualifying check-in: the score and boundary that triggered (or last supported) the review
+        trig = None
+        for e in ev:
+            if e.role != "qualifying":
+                continue
+            ck = s.get(store.Checkin, e.checkin_id)
+            if ck is not None and (trig is None or ck.created_at > trig.created_at):
+                trig = ck
+        if trig is not None:
+            d = trig.drift or {}
+            out["trigger"] = {"checkin_id": trig.id, "recorded_at": iso(trig.created_at),
+                              "normalized_score": round(d["d"] / d["tau"], 4) if d.get("tau") else None,
+                              "threshold": 1.0, "rule": "session score strictly above the boundary (1.0)",
+                              "reason": EXPLANATION.format(n=f.summary.get("qualifying"), w=f.summary.get("window"),
+                                                           d=f.summary.get("distinct_days")),
+                              "acoustic_summary": (trig.extra or {}).get("acoustic_summary", []),
+                              "timing_chips": (trig.extra or {}).get("timing_chips", [])}
         p = s.get(store.Patient, f.patient_id)
         out["patient_display_name"] = p.display_name if p else f.patient_id
         if detail:

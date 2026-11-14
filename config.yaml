@@ -48,7 +48,7 @@ drift:
 
 artifacts:
   dir: artifacts
-  version: auto   # "auto" = newest artifacts/v*; falls back to spectral features if none
+  version: v1   # "auto" = newest artifacts/v*; falls back to spectral features if none
 
 models:
   wavlm: microsoft/wavlm-base
@@ -86,13 +86,32 @@ results:
   demo_snapshot: results/demo_snapshot.json # written by the one-click demo (last real run)
 
 about:
-  team: []                                  # e.g. ["Name One", "Name Two"]: shown on About & Privacy
+  # shown on About & Privacy. Each entry is a name string, or {name, affiliation, bio}.
+  team:
+    - name: Daniel Sin
+      affiliation: MS in Computer and Information Science, University of Pennsylvania
+      bio: >-
+        Machine learning researcher focused on healthcare AI. His work covers the robustness, calibration and
+        fairness of medical AI under distribution shift, counterfactual explanations for clinical decisions,
+        biomedical image segmentation, and reducing unsupported answers in vision-language models. Earlier, on a
+        DARPA-associated project, he helped build a lung-ultrasound pneumothorax classifier (over 90% accuracy)
+        that runs on an iPad. BS in Computer Science and Mathematics, Drexel University (2024); former Data Science
+        Intern at Oracle.
 
-demo:                                       # one-click demo on the Results page
-  clip: demo/clip.wav                       # a CONSENTED team-member recording (40-60 s); git-ignored
-  profile: p_demo                           # whose baseline it is compared against (same speaker as the clip!)
+demo:                                       # one-click demos (Home + Results). Paths are relative to the repo root.
+  # Bundled audio = the bakery passage read by an offline Windows text-to-speech voice (Microsoft David). It is
+  # SYNTHETIC speech, labelled as such everywhere; it exercises the real pipeline, it is not a person's voice.
+  clip: server/demo_assets/sample_normal.wav   # noise-robustness replay (clean vs noisy copy of the same reading)
+  profile: p_sample                         # whose baseline the replay is compared against (same synthetic voice)
   noise: babble_self
   snr_db: 10
-  start_s: 24
-  end_s: 48
+  start_s: 14
+  end_s: 30
   seed: 0
+  sample:                                   # "Analyze sample recording": real analysis of a bundled recording
+    profile: p_sample
+    display_name: "Sample speaker (synthetic voice)"
+    baseline: [server/demo_assets/baseline_1.wav, server/demo_assets/baseline_2.wav,
+               server/demo_assets/baseline_3.wav, server/demo_assets/baseline_4.wav,
+               server/demo_assets/baseline_5.wav]
+    recording: server/demo_assets/sample_changed.wav   # same voice reading noticeably slower

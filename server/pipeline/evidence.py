@@ -87,15 +87,20 @@ def describe(cmp: dict) -> list[str]:
     s = []
     pf = cmp.get("pause_fraction") or {}
     if pf.get("status") == "VALID":
-        d = pf["delta"]
-        s.append("Your latest recording contained more pause time than your baseline recordings." if d > 0.03 else
-                 "Your latest recording contained less pause time than your baseline recordings." if d < -0.03 else
-                 "Pause time was similar to your baseline recordings.")
+        d, r = pf["delta"], pf.get("relative")
+        # "similar" only when BOTH the absolute (< 2 points) and relative (< 10%) changes are small, so the sentence
+        # never contradicts the percentage shown next to it
+        big = abs(d) >= 0.02 or (r is not None and abs(r) >= 0.10)
+        pct = f" ({'+' if d > 0 else ''}{round(r * 100)}% relative to your baseline)" if r is not None else ""
+        s.append((f"Your latest recording contained more pause time than your baseline recordings{pct}." if d > 0 else
+                  f"Your latest recording contained less pause time than your baseline recordings{pct}.")
+                 if big else "Pause time was similar to your baseline recordings.")
     sr = cmp.get("speaking_rate_wpm") or {}
     if sr.get("status") == "VALID":
         r = sr["relative"]
         if r is not None:
-            s.append("You spoke more slowly than in your baseline recordings." if r < -0.08 else
-                     "You spoke faster than in your baseline recordings." if r > 0.08 else
+            pct = f" ({'+' if r > 0 else ''}{round(r * 100)}%)"
+            s.append(f"You spoke more slowly than in your baseline recordings{pct}." if r <= -0.08 else
+                     f"You spoke faster than in your baseline recordings{pct}." if r >= 0.08 else
                      "Your speaking rate was similar to your baseline recordings.")
     return s

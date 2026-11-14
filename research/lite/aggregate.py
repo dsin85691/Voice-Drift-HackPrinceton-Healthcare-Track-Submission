@@ -243,9 +243,23 @@ CONDITION_TEXT = {
 SHOULD_ALERT = {"pause_change", "delivery_change", "change_plus_noise", "delivery_plus_noise"}
 
 
+def _git_commit() -> str:
+    import subprocess
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5,
+                              cwd=Path(__file__).resolve().parents[2]).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def run(feat_dir="lite_feats", ckpt_dir="reports/checkpoints", layer: int = 6, out_path="results/aggregate.json",
-        B: int = 2000, seed: int = 0, q: float = Q) -> dict:
+        B: int = 2000, seed: int = 0, q: float = Q, target_rate: float | None = None) -> dict:
+    """target_rate: target clean false-alert rate (boundary = its (1 - target) quantile). Default 10%: with ~6 clean
+    sessions per held-out speaker, 5% would be decided by one or two sessions per fold."""
     from .train import load_lite
+
+    if target_rate is not None:
+        q = 1.0 - float(target_rate)
 
     d = load_lite(feat_dir, layer)
     extra = {**load_views(feat_dir, "L2", layer), **load_views(feat_dir, "L3", layer)}
@@ -283,7 +297,7 @@ def run(feat_dir="lite_feats", ckpt_dir="reports/checkpoints", layer: int = 6, o
                 "boundary_by_speaker": {s: round(t, 5) for s, t in t_match[m].items()},
                 "boundary_mean": round(float(np.mean(list(t_match[m].values()))), 5),
                 "clean_alert_rate": cr,
-                "within_tolerance": cr["rate"] is not None and bool(abs(cr["rate"] - 0.10) <= 0.05 + 1e-9)}
+                "within_tolerance": cr["rate"] is not None and bool(abs(cr["rate"] - (1 - q)) <= 0.05 + 1e-9)}
             trainb.setdefault(m, {})[lvl] = {"boundary": round(tau_train[m][lvl], 5),
                                              "clean_alert_rate": out_levels[lvl]["train_boundary"]["rates"][m]["clean"]}
 
@@ -336,8 +350,43 @@ def run(feat_dir="lite_feats", ckpt_dir="reports/checkpoints", layer: int = 6, o
                "The matched boundary is set from the other evaluation speakers' clean audio (cross-validated), not "
                "from each person's own baseline as in the app.",
                "Speech-change sensitivity says nothing about detecting any health condition."]}
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(out_path).write_text(json.dumps(res, indent=1))
+    res["matched_operating_point"]["target_clean_rate"] = round(1 - q, 4)
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(res, indent=1))
+    # VD-07 traceable artifacts, written together with ONE timestamp so nothing stale can pass as new
+    ts = res["generated_at"]
+    n_clean = min((v["session"]["clean_alert_rate"]["n"] for v in matched.values()), default=0)
+    per_spk = n_clean / max(1, len(eval_spk))
+    cal = {"generated_at": ts, "target_clean_false_alert_rate": round(1 - q, 4), "level": "session",
+           "method": res["matched_operating_point"]["procedure"],
+           "frozen_before_test": "each speaker's boundary is fixed from OTHER speakers' clean sessions before any "
+                                 "of that speaker's noisy or changed sessions are scored",
+           "sample_size_note": f"{n_clean} clean sessions across {len(eval_spk)} speakers (about {per_spk:.0f} each): "
+                               f"one session is about {100 / max(per_spk, 1):.0f} points of a speaker's rate, so the "
+                               f"target rate can only be approximated.",
+           "methods": {m: {"thresholds_by_speaker": v["session"]["boundary_by_speaker"],
+                           "threshold_mean": v["session"]["boundary_mean"],
+                           "observed_clean_false_alert_rate": v["session"]["clean_alert_rate"],
+                           "within_tolerance": v["session"]["within_tolerance"],
+                           "train_speaker_threshold": trainb[m]["session"]["boundary"]}
+                       for m, v in matched.items()}}
+    metrics = {"generated_at": ts, "operating_point": "matched", "rates": res["results"]["session"]["matched"],
+               "auc": res["auc"], "paired_differences": res["paired_differences"],
+               "noise_sweep": res["noise_sweep"], "unmatched_reference": res["results"]["session"]["train_boundary"]}
+    meta = {"generated_at": ts, "source_commit": _git_commit(), "feature_dir": str(feat_dir),
+            "checkpoints": {m: str(Path(ckpt_dir) / f"{m}.pt") for m in models if m != "B0"},
+            "encoder": "microsoft/wavlm-base (frozen)", "wavlm_layer": layer,
+            "dataset": "Androids corpus, interview task (lite selection)",
+            "seeds": {"bootstrap": seed, "window_selection": 42, "training": 42},
+            "splits": {"train_speakers": train_spk, "eval_speakers": eval_spk,
+                       "rule": "speaker-disjoint, fixed by research.lite.extract.select_windows(seed=42)"},
+            "calibration_method": "leave-one-evaluation-speaker-out quantile of clean session distances",
+            "target_clean_false_alert_rate": round(1 - q, 4), "bootstrap_resamples": B,
+            "conditions": list(res["conditions"]), "primary_comparison": PRIMARY}
+    for name, obj in (("calibration.json", cal), ("evaluation_metrics.json", metrics),
+                      ("evaluation_metadata.json", meta)):
+        (out.parent / name).write_text(json.dumps(obj, indent=1))
     return res
 
 
@@ -347,8 +396,9 @@ def main() -> None:  # pragma: no cover
     ap.add_argument("--checkpoints", default="reports/checkpoints")
     ap.add_argument("--layer", type=int, default=6)
     ap.add_argument("--out", default="results/aggregate.json")
+    ap.add_argument("--target-rate", type=float, default=0.10, help="target clean false-alert rate")
     a = ap.parse_args()
-    o = run(a.feats, a.checkpoints, a.layer, a.out)
+    o = run(a.feats, a.checkpoints, a.layer, a.out, target_rate=a.target_rate)
     f = lambda r: f"{r['rate']:.0%} [{r['ci'][0]:.0%}-{r['ci'][1]:.0%}]" if r and r.get("ci", [None])[0] is not None else "n/a"
     for m, v in o["matched_operating_point"]["by_method"].items():
         s = v["session"]

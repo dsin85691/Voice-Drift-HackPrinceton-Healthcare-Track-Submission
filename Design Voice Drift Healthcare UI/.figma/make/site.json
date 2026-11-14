@@ -1,0 +1,10 @@
+{
+  "description": "Track personalized changes in speech patterns through voice check-ins, helping individuals and clinicians monitor potential mental well-being changes over time.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
