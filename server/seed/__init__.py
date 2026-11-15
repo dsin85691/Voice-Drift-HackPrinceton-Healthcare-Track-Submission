@@ -17,9 +17,11 @@ def load_scenario(name: str, dm: drift.DriftModel, base_time=None) -> str:
     data = json.loads((SEED_DIR / f"{name}.json").read_text(encoding="utf-8"))
     pid = data["patient"]["id"]
     store.purge_patient(pid)
-    now = base_time or store.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+    # 15:00 UTC reads as daytime across US time zones (10 AM Eastern / 7 AM Pacific in winter, an hour later in
+    # summer); 09:00 UTC showed as 4-5 AM.
+    now = base_time or store.utcnow().replace(hour=15, minute=0, second=0, microsecond=0)
     if base_time is None and now > store.utcnow():
-        now -= timedelta(days=1)      # before 09:00 UTC "today 09:00" is in the future: never seed future check-ins
+        now -= timedelta(days=1)      # before 15:00 UTC "today 15:00" is in the future: never seed future check-ins
     with store.session() as s:
         from ..pipeline.run import demo_enrollment
         s.add(store.Patient(id=pid, display_name=data["patient"]["display_name"], consent_at=store.utcnow(),

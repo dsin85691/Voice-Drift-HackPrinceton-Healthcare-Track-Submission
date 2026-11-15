@@ -8,10 +8,20 @@ const MIN_S = 23, MAX_S = 60;
 
 // ------------------------------------------------------------------ helpers
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// Navigation counter: every route() call increments it. A request that started under an older navigation never
+// settles (neither resolves nor rejects), so a slow earlier page can't render over the page that replaced it, and
+// `.catch(() => null)` fallbacks in a stale page can't carry on rendering either.
+let navSeq = 0;
+const NEVER = new Promise(() => {});
 async function api(path, opts) {
-  const r = await fetch("/api" + path, opts);
+  const seq = navSeq;
+  let r, j;
+  try { r = await fetch("/api" + path, opts); }
+  catch (e) { if (seq !== navSeq) return NEVER; throw e; }
+  if (seq !== navSeq) return NEVER;
   if (!r.ok) { const e = new Error(`${path}: ${r.status}`); e.status = r.status; throw e; }
-  return r.json();
+  j = await r.json();
+  return seq !== navSeq ? NEVER : j;
 }
 const post = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const fmtDate = (iso) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -146,8 +156,11 @@ function otherView(target) {
 
 let cleanup = () => {};
 async function route() {
+  const my = ++navSeq;
+  const stale = () => my !== navSeq;        // a newer route() has started: this one must not touch the page
+  S.busy = false;
   cleanup(); cleanup = () => {};
-  const h = location.hash.replace(/^#/, "").split("?")[0] || "/";   // "#/trends?days=7" -> "/trends"
+  const h =location.hash.replace(/^#/, "").split("?")[0] || "/";   // "#/trends?days=7" -> "/trends"
   const seg = h.split("/").filter(Boolean);
   const top = seg[0] || "home";
   const clinPage = ["review", "research", "clinician"].includes(top);
@@ -155,9 +168,11 @@ async function route() {
     ? ({ home: "queue", review: "queue", research: "patients", clinician: "patients", settings: "about", windows: "results", analysis: "results" }[top] || top)
     : ({ settings: "about", windows: "trends", analysis: "trends" }[top] || top);
   S.results = await api("/results").catch(() => null);      // refreshed every navigation: picks up a newly copied file
+  if (stale()) return;
   S.page = active;
   renderNav(active);
   await renderTopbar();
+  if (stale()) return;
   $app.innerHTML = '<p class="muted">Loading&hellip;</p>';
   try {
     if (isClin() && top === "home") await viewReviewQueue();               // clinician lands on the queue
@@ -175,21 +190,31 @@ async function route() {
     else if ((top === "research" || top === "clinician") && seg[1]) await viewResearchDetail(decodeURIComponent(seg[1]));
     else if (top === "research" || top === "clinician") await viewResearch();
     else $app.innerHTML = `<div class="card"><h1>Page not found</h1><a href="#/">Go to Home</a></div>`;
+    if (stale()) return;
     // kit "prototype ribbon": the same disclaimer on every page (backlog VD-06)
     $app.insertAdjacentHTML("afterbegin", `<div class="ribbon">${icon("info", 18)}<span><strong>Research prototype:</strong> ${esc(DISCLAIMER)}</span></div>`);
   } catch (e) {
-    $app.innerHTML = `<div class="callout caution" role="alert"><h3>Reconnecting to the Voice Drift server…</h3>
-      <p>We couldn't load this page (${esc(e.message)}). If the server is restarting, this page reloads by itself as soon as it is back.</p>
-      <p class="small muted" id="reconn">Checking every 3 seconds.</p></div>`;
-    // auto-recover after a server restart: poll health, then re-render the same page (no manual reload needed)
-    const iv = setInterval(async () => {
-      try {
-        const r = await fetch("/api/health", { cache: "no-store" });
-        if (r.ok) { clearInterval(iv); S.health = null; route(); }
-      } catch { const el = document.getElementById("reconn"); if (el) el.textContent = `Still waiting for the server (${new Date().toLocaleTimeString()}).`; }
-    }, 3000);
-    const prev = cleanup;
-    cleanup = () => { clearInterval(iv); prev(); };
+    if (stale()) return;                  // an older page failing must not replace the newer one
+    console.error("page failed:", e);
+    if (isNetErr(e)) {                    // only a real outage gets the reconnect path
+      $app.innerHTML = `<div class="callout caution" role="alert"><h3>Reconnecting to the Voice Drift server…</h3>
+        <p>We couldn't reach the server. If it is restarting, this page reloads by itself as soon as it is back.</p>
+        <p class="small muted" id="reconn">Checking every 3 seconds.</p></div>`;
+      showOffline();                      // one poller (shared with the banner), one re-render
+    } else if (e.status === 404) {        // e.g. a review from before "Load demo", or a deleted profile
+      const [what, href, label] = {
+        review: ["This review wasn't found", "#/review", "Go to the review queue"],
+        research: ["This profile wasn't found", "#/research", "Go to the patient list"],
+        clinician: ["This profile wasn't found", "#/research", "Go to the patient list"],
+        analysis: ["This check-in wasn't found", "#/trends", "Go to Trends"],
+        windows: ["This check-in wasn't found", "#/trends", "Go to Trends"],
+      }[top] || ["Not found", "#/", "Go to Home"];
+      $app.innerHTML = `<div class="card stack" role="alert"><h1>${what}</h1>
+        <p>It may have been removed, or the demo data was loaded again since this link was made.</p><p><a class="btn primary" href="${href}">${label}</a></p></div>`;
+    } else {
+      $app.innerHTML = `<div class="card stack" role="alert"><h1>This page couldn't be shown</h1>
+        <p class="small">${esc(e.message || String(e))}</p><p><a class="btn primary" href="#/">Go to Home</a></p></div>`;
+    }
   }
   $app.focus({ preventScroll: true });
 }
@@ -200,22 +225,48 @@ window.addEventListener("hashchange", route);
 const OFFLINE_TEXT = "Voice Drift isn't responding. Check that the server is running, then try again.";
 const isNetErr = (e) => e instanceof TypeError && /fetch|network|load failed/i.test(String(e.message || e));
 const offlineMsg = (e) => (isNetErr(e) ? OFFLINE_TEXT : `That didn't work (${e && e.message ? e.message : e}).`);
-let offlineTimer = null;
-function showOffline() {
-  if (document.getElementById("offline-banner")) return;
-  document.body.insertAdjacentHTML("afterbegin", `<div id="offline-banner" role="alert" style="position:sticky;top:0;z-index:50;background:#FFF4E8;border-bottom:2px solid var(--amber);color:var(--amber-ink);padding:10px 16px;font-weight:700;text-align:center">${OFFLINE_TEXT} <span style="font-weight:500">Reconnecting automatically…</span></div>`);
-  offlineTimer = setInterval(async () => {
+// One poller for both the offline banner and a page's own "Reconnecting" notice, so the server coming back causes
+// exactly one re-render. It never re-renders over a recording or an analysis in progress (S.busy): it only clears.
+let recoverTimer = null;
+function waitForServer() {
+  if (recoverTimer) return;
+  recoverTimer = setInterval(async () => {
     try {
       const r = await fetch("/api/health", { cache: "no-store" });
       if (!r.ok) return;
-      clearInterval(offlineTimer); offlineTimer = null;
+      clearInterval(recoverTimer); recoverTimer = null;
       document.getElementById("offline-banner")?.remove();
-      S.health = null; route();
-    } catch { /* still down: keep waiting */ }
+      S.health = null;
+      if (!S.busy) route();
+    } catch {
+      const el = document.getElementById("reconn");
+      if (el) el.textContent = `Still waiting for the server (${new Date().toLocaleTimeString()}).`;
+    }
   }, 3000);
 }
+function showOffline() {
+  if (!document.getElementById("offline-banner"))
+    document.body.insertAdjacentHTML("afterbegin", `<div id="offline-banner" role="alert" style="position:sticky;top:0;z-index:50;background:#FFF4E8;border-bottom:2px solid var(--amber);color:var(--amber-ink);padding:10px 16px;font-weight:700;text-align:center">${OFFLINE_TEXT} <span style="font-weight:500">Reconnecting automatically…</span></div>`);
+  waitForServer();
+}
+// Anything else that escapes a handler (a rejected action, a browser API throwing) is reported too, never silent.
+function showProblem(text) {
+  let el = document.getElementById("problem-banner");
+  if (!el) {
+    document.body.insertAdjacentHTML("afterbegin", `<div id="problem-banner" role="alert" style="position:sticky;top:0;z-index:49;background:#FDECEA;border-bottom:2px solid var(--coral);color:var(--ink);padding:10px 16px;text-align:center"><span></span> <button id="problem-close" style="margin-left:8px">Dismiss</button></div>`);
+    el = document.getElementById("problem-banner");
+    document.getElementById("problem-close").onclick = () => el.remove();
+  }
+  el.firstElementChild.textContent = text;
+}
 window.addEventListener("unhandledrejection", (ev) => {
-  if (isNetErr(ev.reason)) { ev.preventDefault(); showOffline(); }
+  ev.preventDefault();
+  console.error("unhandled:", ev.reason);
+  if (isNetErr(ev.reason)) showOffline();
+  else showProblem(offlineMsg(ev.reason) + " Please try again; if it keeps happening, reload the page.");
+});
+window.addEventListener("error", (ev) => {
+  if (ev.error instanceof Error) showProblem(offlineMsg(ev.error) + " Please try again; if it keeps happening, reload the page.");
 });
 
 route();
@@ -226,6 +277,8 @@ async function timeline(pid = S.pid, days = 365) {
 }
 const scored = (c) => c.drift && c.drift.tau > 0;
 const ratio = (c) => (scored(c) ? c.drift.d / c.drift.tau : null);
+// clinician pages talk about the person, never "your"
+const yb = () => (isClin() ? "the person's baseline" : "your baseline");
 
 // ------------------------------------------------------------------ Home (patient)
 async function viewHome() {
@@ -249,15 +302,20 @@ async function viewHome() {
   const pendingFlag = isClin() ? cks.map((c) => c.review_flag).filter((f) => f && f.state === "pending").pop() : null;
   const lastScored = scoredCks[scoredCks.length - 1];
   const fallbackEnc = h.encoder && h.encoder.includes("fallback");
-  const signed = (v, more, less) => (v == null ? null : `${Math.abs(Math.round(v))}<small>% ${v < 0 ? less : v > 0 ? more : "change"}</small>`);
+  // the direction word comes from the ROUNDED value, so -0.4% never reads "0% slower"
+  const signed = (v, more, less) => { if (v == null) return null; const r = Math.round(v);
+    return r === 0 ? "No change" : `${Math.abs(r)}<small>% ${r < 0 ? less : more}</small>`; };
   const series = (k) => cks.map((c) => c[k]).filter((v) => v != null);
   const attn = pendingFlag ? {
       active: true, ic: "alert", h: "A pattern worth reviewing",
       p: "Several recent recordings differ from this person's baseline, on different days. That is a prompt for a person to look closer, not a diagnosis.",
       btn: `<a class="btn primary" href="#/review/${encodeURIComponent(pendingFlag.flag_id)}">Open the review item ${icon("arrow", 17)}</a>` }
-    : lastScored && lastScored.drift.exceeds ? {
-      active: true, ic: "info", h: "One recording different from your usual",
-      p: "A single recording can differ for many reasons: the room, the microphone, a slower morning. Repeating the check-in shows whether it repeats.",
+    : lastScored && lastScored.drift.exceeds ? {      // heading matches the "N / M" count shown beside it
+      ...(nAbove >= 2 ? { h: "Several recent recordings different from your usual",
+        p: `${nAbove} of your last ${recentScored.length} compared recordings differ from your usual. Recordings can differ for many reasons: the room, the microphone, a slower morning. Another check-in shows whether the difference continues.` }
+        : { h: "One recording different from your usual",
+        p: "A single recording can differ for many reasons: the room, the microphone, a slower morning. Repeating the check-in shows whether it repeats." }),
+      active: true, ic: "info",
       btn: synthetic ? `<a class="btn primary" href="#/trends">See the trend ${icon("arrow", 17)}</a>` : `<a class="btn primary" href="#/checkin?verify=${encodeURIComponent(lastScored.checkin_id)}">Repeat check-in ${icon("arrow", 17)}</a>` }
     : !ready ? {
       active: false, ic: "clock", h: "Building the baseline",
@@ -283,11 +341,13 @@ async function viewHome() {
         <div class="vd-orb">${icon("sound", 60)}</div>
         <div class="vd-visual-foot">${waveformHtml()}<span>compared with your own baseline</span></div></div>
     </section>
-    ${tl && tl.repeat_requested ? `<div class="callout info" style="margin:16px 0"><h3>Repeat check-in requested</h3><p class="small">Your reviewer asked for another check-in using the same reading passage. This is a request for another recording, not a treatment instruction.</p><a class="btn primary" href="#/checkin">${icon("mic")}Start check-in</a></div>` : ""}
+    ${tl && tl.repeat_requested ? `<div class="callout info" style="margin:16px 0"><h3>Repeat check-in requested</h3><p class="small">Your reviewer asked for another check-in using the same reading passage. This is a request for another recording, not a treatment instruction.</p>${synthetic
+      ? `<p class="small muted" style="margin:0">Synthetic profile: a repeat can't be recorded here. On a real profile, this is where the person would record it.</p>`
+      : `<a class="btn primary" href="#/checkin">${icon("mic")}Start check-in</a>`}</div>` : ""}
     ${synthetic ? `<div class="callout caution" style="margin:16px 0"><h3>Synthetic demo profile</h3><p class="small">Every value on this profile is generated for the demo, in a simplified feature space, to illustrate the monitoring and review workflow. The last two days are set to differ from the baseline; they are not a measurement of slower speech, and the trained model's overall score is not shown to detect slowed speech (see Results). Switch profile at the top to see real recordings.</p></div>` : ""}
 
     <div class="section-title"><div><div class="eyebrow">The current picture</div><h2>At a glance <span>&middot; ${last ? `latest check-in ${fmtDT(last.created_at)}` : "no check-ins yet"}</span></h2></div>
-      <span class="small muted">${ready ? `Baseline set ${fmtDate(tl.baseline.frozen_at)} from ${need} recordings` : `Baseline ${Math.min(passes, need)} of ${need}`}</span></div>
+      <span class="small muted">${ready ? `Baseline set ${fmtDate(tl.baseline.frozen_at)} from ${tl.baseline.n} recording${tl.baseline.n === 1 ? "" : "s"}` : `Baseline ${Math.min(passes, need)} of ${need}`}</span></div>
     <div class="metric-grid">
       <a class="metric-card blue" href="#/trends"><div class="metric-top"><span class="metric-icon blue">${icon("chart")}</span>${icon("arrow", 17)}</div>
         <span class="metric-label">Speaking rate</span>
@@ -423,12 +483,17 @@ function sessionChart(cks, { height = 240 } = {}) {
   if (!cks.length) return '<p class="muted">No check-ins in this period.</p>';
   const W = 760, H = height, L = 58, R = 40, T = 22, B = 46;   // R/T leave room for the last date and "acted" labels
   const vals = cks.map(ratio).filter((v) => v != null);
-  const ymax = Math.max(2, ...vals) * 1.1;
+  // axis capped at 10x the boundary so one extreme score can't flatten every other point; higher values are drawn
+  // at the top edge and labelled "off scale" with their value
+  const YCAP = 10;
+  const ymax = Math.min(Math.max(2, ...vals) * 1.1, YCAP);
   const x = (i) => L + (cks.length === 1 ? 0.5 : i / (cks.length - 1)) * (W - L - R);
-  const y = (v) => T + (1 - v / ymax) * (H - T - B);
+  const y = (v) => T + (1 - Math.min(v, ymax) / ymax) * (H - T - B);
   const lane = H - B + 14;
+  // gridline step from 0.5 / 1 / 2 / 5: at most about eight lines whatever the range
+  const step = [0.5, 1, 2, 5].find((st) => ymax / st <= 8) || 5;
   let s = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Difference from baseline per check-in. Boundary at 1.">`;
-  for (let v = 0; v <= ymax; v += ymax > 4 ? 1 : 0.5) s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${v}</text>`;
+  for (let v = 0; v <= ymax + 1e-9; v += step) s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${v}</text>`;
   s += `<line x1="${L}" x2="${W - R}" y1="${y(1)}" y2="${y(1)}" stroke="var(--navy)" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${W - R}" y="${y(1) - 6}" text-anchor="end">usual-range boundary (1)</text>`;
   let path = "", pen = false;
   cks.forEach((c, i) => {
@@ -449,7 +514,8 @@ function sessionChart(cks, { height = 240 } = {}) {
     s += above
       ? `<g class="pt" data-ck="${esc(c.checkin_id)}" tabindex="0" style="cursor:pointer">${rev}<path d="M${cx} ${y(v) - 7}l7 7-7 7-7-7z" fill="var(--amber)"/><title>${tip}</title></g>`
       : `<g class="pt" data-ck="${esc(c.checkin_id)}" tabindex="0" style="cursor:pointer">${rev}<circle cx="${cx}" cy="${y(v)}" r="6" fill="var(--teal)"/><title>${tip}</title></g>`;
-    if (c.acted) s += `<text x="${cx}" y="${y(v) - 12}" text-anchor="middle">acted</text>`;
+    if (v > ymax) s += `<text x="${cx}" y="${T - 6}" text-anchor="middle">&#9650; off scale (${v.toFixed(1)})</text>`;
+    else if (c.acted) s += `<text x="${cx}" y="${y(v) - 12}" text-anchor="middle">acted</text>`;
   });
   s += `<path d="${path}" fill="none" stroke="var(--teal)" stroke-width="2" opacity=".55"/>`;
   s += `<text x="14" y="${(H - B) / 2}" transform="rotate(-90 14 ${(H - B) / 2})" text-anchor="middle">difference (&times; boundary)</text></svg>`;
@@ -462,7 +528,7 @@ function sessionChart(cks, { height = 240 } = {}) {
       <span><span class="box" style="background:var(--amber);transform:rotate(45deg)"></span>above boundary</span>
       ${isClin() && cks.some((c) => c.review_flag) ? '<span><span class="box" style="border:2px solid var(--navy);border-radius:50%;background:none"></span>part of a review-queue item</span>' : ""}
       <span>&#9675; baseline / not compared</span><span>&times; not usable</span></div>
-    <p class="small muted">Vertical axis: how far each check-in's voice is from your baseline, as a multiple of the usual-range boundary (1 = the edge of normal day-to-day variation). Horizontal axis: check-in date.
+    <p class="small muted">Vertical axis: how far each check-in's voice is from ${yb()}, as a multiple of the usual-range boundary (1 = the edge of normal day-to-day variation). Horizontal axis: check-in date.
       ${vals.length} compared check-in${vals.length === 1 ? "" : "s"}, ${nAbove} above the boundary, ${nBase} baseline or not compared, ${nRej} not usable. Each point is one whole check-in (session level).
       ${isClin() ? "A single point above 1 is an observation; a review-queue item needs 2 of the last 3 usable check-ins above 1, on at least 2 different days within 7 days. " : "A single point above 1 can happen for many reasons, such as the room, the microphone or a slower morning. "}Select a point to see its measurements.</p>
     ${acted ? `<p class="small"><span class="mode synthetic_demo">acted</span> marks simulated days generated to differ from the baseline, to illustrate the review workflow. They are not measurements of real or acted speech, and nobody's real speech changed.</p>` : ""}</figure>`;
@@ -523,7 +589,7 @@ async function viewCheckin() {
     </section>
     <div class="callout info small" style="margin-top:16px"><h3>${icon("shield", 16)} Your recording</h3>
       Audio is sent only to this computer's Voice Drift server, analysed there, and the audio file is deleted afterwards.
-      ${reading ? "Reading-passage recordings are never sent to a language-model service." : "A written transcript may be sent to a language-model service to find quotes."}
+      ${reading ? "Neither the audio nor the transcript of a reading-passage check-in is sent to a language-model service." : "Audio is never sent to a language-model service. The written transcript may be, to find quotes."}
       Please read the whole passage (about 40 seconds); the Stop button unlocks after ${MIN_S} seconds. See <a href="#/about">About &amp; Privacy</a>.</div>`;
   const $ = (id) => document.getElementById(id);
   const rec = $("rec"), stop = $("stop"), cancel = $("cancel"), arc = $("arc"), clock = $("clock"), lvl = $("lvl"), hint = $("hint"), status = $("status");
@@ -555,9 +621,20 @@ async function viewCheckin() {
     if (!navigator.mediaDevices?.getUserMedia) { showMicProblem("unsupported"); return; }
     rec.disabled = true;
     say("Waiting for microphone permission. Choose “Allow” in your browser's prompt so we can record your check-in.");
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); }
-    catch (e) { rec.disabled = false; showMicProblem(e.name); return; }
-    cancel.disabled = false; if (noiseBtn) noiseBtn.disabled = false;
+    let s;
+    try { s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); }
+    catch (e) { if (!stopped) { rec.disabled = false; showMicProblem(e.name); } return; }
+    // left the page while the permission prompt was open: release the mic at once instead of recording off-screen
+    if (stopped) { s.getTracks().forEach((t) => t.stop()); return; }
+    stream = s;
+    try { startRecording(); }
+    catch (e) {           // AudioContext / MediaRecorder refused: release the mic, re-enable Start, and say so
+      finish(); mr = null; t0 = null; S.busy = false;
+      rec.disabled = false; cancel.disabled = true; stop.disabled = true; if (noiseBtn) noiseBtn.disabled = true;
+      showMicProblem("recorder", e && e.message);
+    }
+  };
+  function startRecording() {
     ctx = new AudioContext();
     const an = ctx.createAnalyser(); an.fftSize = 1024;
     ctx.createMediaStreamSource(stream).connect(an);
@@ -574,32 +651,38 @@ async function viewCheckin() {
       raf = requestAnimationFrame(tick);
     };
     tick();
-    mr = new MediaRecorder(stream, MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? { mimeType: "audio/webm;codecs=opus" } : undefined);
-    mr.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    const mime = mr.mimeType || "audio/webm";        // captured now: cleanup() may null `mr` before onstop fires
-    mr.onstop = () => { finish(); if (!stopped) upload(new Blob(chunks, { type: mime })); };
-    mr.start(250);
+    const m = new MediaRecorder(stream, MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? { mimeType: "audio/webm;codecs=opus" } : undefined);
+    m.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    const mime = m.mimeType || "audio/webm";        // captured now: cleanup() may null `mr` before onstop fires
+    m.onstop = () => { finish(); if (!stopped) upload(new Blob(chunks, { type: mime })); };
+    m.start(250);
+    mr = m;
+    S.busy = true;                                   // the reconnect poller must not re-render over a recording
+    cancel.disabled = false; if (noiseBtn) noiseBtn.disabled = false;
     t0 = performance.now();
     say("Recording. Speak naturally.");
     status.insertAdjacentHTML("afterbegin", '<span class="recdot" aria-hidden="true"></span> ');
     timer = setInterval(() => {
       const el = elapsed(), left = Math.max(0, MAX_S - el);
-      clock.textContent = `${Math.floor(left / 60)}:${String(Math.ceil(left) % 60).padStart(2, "0")}`;
+      const secs = Math.ceil(left);                  // round once, then derive minutes and seconds from it
+      clock.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
       arc.style.strokeDashoffset = 527.8 * (1 - el / MAX_S);
       stop.disabled = el < MIN_S;
       stop.textContent = el < MIN_S ? `Stop & submit (after 0:${String(Math.ceil(MIN_S - el)).padStart(2, "0")})` : "Stop & submit";
       if (el >= MAX_S && mr && mr.state !== "inactive") mr.stop();   // stop() on an inactive recorder throws
     }, 200);
-  };
+  }
   stop.onclick = () => mr && mr.state !== "inactive" && mr.stop();
-  cancel.onclick = () => { stopped = true; if (mr && mr.state !== "inactive") mr.stop(); finish(); chunks = []; viewCheckin(); };
+  // through route(): its cleanup stops the recorder without uploading, and the page comes back with its ribbon
+  cancel.onclick = () => { chunks = []; route(); };
 
-  function showMicProblem(kind) {
+  function showMicProblem(kind, detail) {
     const msg = {
       NotAllowedError: ["Microphone access was blocked", "Allow microphone access for this site: select the lock or site-settings icon in your browser's address bar, set Microphone to Allow, then reload this page."],
       NotFoundError: ["No microphone found", "Connect a microphone or headset, then try again."],
       NotReadableError: ["The microphone is in use", "Close other apps that are using the microphone (calls, recorders), then try again."],
       unsupported: ["Recording isn't available here", "Open Voice Drift in an up-to-date browser on http://127.0.0.1 or an HTTPS address."],
+      recorder: ["We couldn't start recording", `Your browser couldn't start its audio recorder${detail ? ` (${detail})` : ""}. The microphone has been released. Try again, or use an up-to-date Chrome, Edge or Firefox.`],
     }[kind] || ["We couldn't start the microphone", "Check your microphone and try again."];
     say(msg[0] + ".");
     $app.querySelector(".card").insertAdjacentHTML("beforeend", `<div class="callout caution" role="alert"><h3>${msg[0]}</h3><p class="small">${msg[1]}</p></div>`);
@@ -607,47 +690,107 @@ async function viewCheckin() {
 
   async function upload(blob) {
     const fd = new FormData();
-    fd.append("audio", blob, "checkin.webm"); fd.append("prompt_id", prompt.prompt_id);
+    // name the file after the container the browser actually recorded (Safari records MP4, not WebM)
+    const ext = /mp4|aac|m4a/.test(blob.type) ? "mp4" : /ogg/.test(blob.type) ? "ogg" : /wav/.test(blob.type) ? "wav" : "webm";
+    fd.append("audio", blob, `checkin.${ext}`); fd.append("prompt_id", prompt.prompt_id);
+    fd.append("tz_offset_min", String(new Date().getTimezoneOffset()));   // "separate days" use the person's own days
     if (verify) fd.append("verification_of", verify);
     const end = +elapsed().toFixed(2);
     marks.forEach((m) => { if (m.end_seconds == null) m.end_seconds = end; });
     if (marks.length) fd.append("interventions", JSON.stringify(marks));
     $app.innerHTML = `<h1>Checking your recording</h1><div class="card"><ul class="steps" id="steps"></ul><p id="pstatus" role="status" class="small muted">Uploading&hellip;</p></div>`;
+    const seq = navSeq;                // left the page during the upload: the recording is saved, show nothing here
+    let r, j = {};
     try {
-      const r = await fetch(`/api/patients/${encodeURIComponent(S.pid)}/checkins`, { method: "POST", body: fd });
-      if (r.status === 409 || r.status === 404) {
-        const j = await r.json().catch(() => ({}));
-        const synthetic = String(j.detail || "").includes("synthetic demo profile");
-        renderOutcome({ outcome: "failed", switchLive: synthetic,
-          message: synthetic ? "This is a synthetic demo profile, so a real recording can't be compared with it. Switch to the live profile to record."
-            : `${verify ? "This repeat" : "This recording"} couldn't be saved: ${j.detail || r.status}.` });
-        return;
-      }
-      if (!r.ok) throw new Error(r.status);
-      watch((await r.json()).checkin_id);
-    } catch (e) {
+      r = await fetch(`/api/patients/${encodeURIComponent(S.pid)}/checkins`, { method: "POST", body: fd });
+      j = await r.json().catch(() => ({}));
+    } catch (e) {                      // only a request that never got an answer reaches the "not saved" message
+      if (seq !== navSeq) return;
       renderOutcome({ outcome: "failed", message: "The upload didn't reach the server, so this recording was not saved. Please check that Voice Drift is running and record again." });
+      return;
     }
+    if (seq !== navSeq) return;
+    if (!r.ok || !j.checkin_id) {
+      const synthetic = String(j.detail || "").includes("synthetic demo profile");
+      renderOutcome({ outcome: "failed", switchLive: synthetic,
+        message: synthetic ? "This is a synthetic demo profile, so a real recording can't be compared with it. Switch to the live profile to record."
+          : `${verify ? "This repeat" : "This recording"} couldn't be saved: ${typeof j.detail === "string" ? j.detail : `server answered ${r.status}`}.` });
+      return;
+    }
+    watch(j.checkin_id);               // outside the try: a display problem here is never reported as "not saved"
   }
 }
 
 const STEPS = [["quality", "Checking recording quality"], ["transcript", "Transcribing"], ["scores", "Comparing with your baseline"], ["evidence", "Reading the transcript"]];
+// Analysis normally finishes in ~20 s (up to ~70 s while the models load). Past this, stop waiting and say so.
+const WATCH_LIMIT_MS = 180000, WATCH_POLL_MS = 3000;
 function watch(cid) {
   const ul = document.getElementById("steps");
+  if (!ul) return;                       // the page changed: nothing to update
+  S.busy = true;
   ul.innerHTML = STEPS.map(([k, l]) => `<li id="s_${k}"><span aria-hidden="true">&#9675;</span><span>${l}</span><span class="ms"></span></li>`).join("");
-  const es = new EventSource(`/api/checkins/${cid}/events?role=patient`);
-  cleanup = () => es.close();
-  es.addEventListener("stage", (e) => {
-    const d = JSON.parse(e.data), li = document.getElementById("s_" + d.stage);
-    if (!li) return;
-    li.firstElementChild.outerHTML = icon("check", 18);
-    li.querySelector(".ms").textContent = d.ms ? (d.ms / 1000).toFixed(1) + " s" : "skipped";
-    document.getElementById("pstatus").textContent = `${li.children[1].textContent}: done`;
-  });
-  es.addEventListener("result", (e) => { es.close(); renderOutcome(JSON.parse(e.data)); });
+  const pstatus = (t) => { const el = document.getElementById("pstatus"); if (el) el.textContent = t; };
+  let done = false, es = null, retry = null, limit = null;
+  const stopAll = () => { done = true; if (es) es.close(); clearTimeout(retry); clearTimeout(limit); };
+  const deliver = (r) => { if (done) return; stopAll(); renderOutcome(r); };
+  // the stored result has the same shape as the stream's "result" event; 404 means analysis hasn't finished yet
+  const check = async () => {
+    try {
+      const r = await fetch(`/api/checkins/${encodeURIComponent(cid)}?role=patient`, { cache: "no-store" });
+      if (r.ok) { deliver(await r.json()); return true; }
+      if (!done && r.status !== 404) pstatus(`Waiting for the analysis (server answered ${r.status}).`);
+    } catch { if (!done) pstatus("Lost contact with the server. Waiting for it to come back…"); }
+    return false;
+  };
+  // The stream dropped (server restart, network): close it, fetch the stored result once, and if there is none yet
+  // reopen the stream after a pause. The server answers a finished check-in's stream with its result at once.
+  const fallBack = async () => {
+    if (done || !es) return;
+    es.close(); es = null;
+    pstatus("Lost the live progress updates. Checking for the result…");
+    if (await check() || done) return;
+    retry = setTimeout(open, WATCH_POLL_MS);
+  };
+  const giveUp = async () => {
+    if (done || await check()) return;
+    stopAll(); S.busy = false;
+    const box = document.getElementById("pstatus");
+    if (!box) return;
+    box.closest(".card").insertAdjacentHTML("beforeend", `<div class="callout caution" role="alert" style="margin-top:12px">
+      <h3>This is taking longer than expected</h3>
+      <p class="small">Your recording reached the server, but no result has come back after ${WATCH_LIMIT_MS / 60000} minutes. If the
+        server restarted while analysing it, the recording may not have been kept. You can check again, or record again.</p>
+      <div class="row"><button class="primary" id="wcheck">Check again</button><a class="btn" href="#/checkin">Record again</a><a class="btn" href="#/">Home</a></div>
+      <p class="small muted" id="wmsg" role="status"></p></div>`);
+    document.getElementById("wcheck").onclick = async () => {
+      const m = document.getElementById("wmsg");
+      m.textContent = "Checking…";
+      done = false;
+      if (!(await check())) { done = true; m.textContent = `No result yet (${new Date().toLocaleTimeString()}).`; }
+    };
+  };
+  function open() {
+    if (done) return;
+    es = new EventSource(`/api/checkins/${encodeURIComponent(cid)}/events?role=patient`);
+    es.addEventListener("stage", (e) => {
+      const d = JSON.parse(e.data), li = document.getElementById("s_" + d.stage);
+      if (!li || li.dataset.done) return;          // a reopened stream replays stages already shown
+      li.dataset.done = "1";
+      li.firstElementChild.outerHTML = icon("check", 18);
+      li.querySelector(".ms").textContent = d.ms ? (d.ms / 1000).toFixed(1) + " s" : "skipped";
+      pstatus(`${li.children[1].textContent}: done`);
+    });
+    es.addEventListener("result", (e) => deliver(JSON.parse(e.data)));
+    // fires for a dropped connection, a 404 (unknown check-in) and the server's own "event: error"
+    es.addEventListener("error", fallBack);
+  }
+  cleanup = stopAll;
+  limit = setTimeout(giveUp, WATCH_LIMIT_MS);
+  open();
 }
 
 function renderOutcome(r) {
+  S.busy = false;
   if (r.outcome === "safety") {
     $app.innerHTML = `<div class="support" role="alert"><p class="big">You are not alone.</p><p>${esc(r.safety.message)}</p>
       <p class="big"><a href="tel:988">Call or text 988</a></p><p>Please also contact your clinician today.</p></div>`;
@@ -696,7 +839,6 @@ function sampleCardHtml(res) {
   return `<section class="card stack" aria-labelledby="smp-h">
     <div class="row"><h2 id="smp-h" style="margin:0">Try it without recording</h2><span class="spacer"></span>
       <button class="primary" id="samplebtn" ${ok ? "" : "disabled"}>${icon("analysis")}Analyze sample recording</button></div>
-    <p class="small">${esc(INSTRUCTION)}</p>
     <p class="small muted">The sample is the standard passage read by a <strong>synthetic text-to-speech voice</strong>, not a person. It is analysed with the same pipeline as a real check-in, against a baseline built from five other readings by the same synthetic voice. The analysis is measured once in advance, so the result appears straight away.</p>
     ${ok ? "" : '<p class="small callout caution">The bundled sample audio is missing from this deployment, so the demo is unavailable. Everything else still works.</p>'}
     <p id="samplemsg" role="status" class="small">${warmMsg}</p><div id="sampleout"></div></section>`;
@@ -771,7 +913,7 @@ function wireSample(res) {
 // ------------------------------------------------------------------ F4 acoustic evidence (shared)
 const FEATURE_FMT = { pause_fraction: (v) => `${Math.round(v * 1000) / 10}%`, speaking_rate_wpm: (v) => `${Math.round(v)} wpm`, pitch_variability: (v) => `${fmt(v, 1)} st` };
 const DELTA_FMT = { pause_fraction: (v) => `${v > 0 ? "+" : ""}${Math.round(v * 1000) / 10} points`, speaking_rate_wpm: (v) => `${v > 0 ? "+" : ""}${Math.round(v)} wpm`, pitch_variability: (v) => `${v > 0 ? "+" : ""}${fmt(v, 1)} st` };
-function acousticHtml(F, summary, { heading = "What Changed in Your Speech?" } = {}) {
+function acousticHtml(F, summary, { heading = isClin() ? "What changed in the speech?" : "What Changed in Your Speech?" } = {}) {
   if (!F) return `<h2>${heading}</h2><p class="muted small">No measurements for this check-in.</p>`;
   const row = (k) => {
     const f = F[k], ok = f.status === "VALID";
@@ -781,7 +923,7 @@ function acousticHtml(F, summary, { heading = "What Changed in Your Speech?" } =
   };
   return `<h2>${heading}</h2>
     ${(summary || []).length ? summary.map((x) => `<p>${esc(x)}</p>`).join("") : '<p class="muted small">No comparable measurement for this check-in.</p>'}
-    <div class="tablewrap"><table><caption class="sr-only">Speech measurements, baseline vs this recording</caption><thead><tr><th>Measurement</th><th class="num">Your baseline</th><th class="num">This recording</th><th class="num">Difference</th></tr></thead>
+    <div class="tablewrap"><table><caption class="sr-only">Speech measurements, baseline vs this recording</caption><thead><tr><th>Measurement</th><th class="num">${isClin() ? "Baseline" : "Your baseline"}</th><th class="num">This recording</th><th class="num">Difference</th></tr></thead>
       <tbody>${Object.keys(F).map(row).join("")}</tbody></table></div>
     <p class="tiny muted">Same measurement method for baseline and this recording. Pause time counts gaps of 200 ms or more between stretches of speech. These describe the recording; they are not symptoms and are not shown to explain the overall difference from baseline.</p>`;
 }
@@ -842,7 +984,7 @@ function wireContext(cid) {
 async function viewAnalysis(cid) {
   const tl = await timeline();
   const recs = (tl ? tl.checkins : []).filter((c) => c.has_window_analysis && c.status !== "SAFETY");
-  const tabs = `<nav class="tabs" aria-label="Analysis sources"><a href="#/analysis" aria-current="page">Your recordings</a><a href="#/analysis/lab">Controlled experiment</a></nav>`;
+  const tabs = `<nav class="tabs" aria-label="Analysis sources"><a href="#/analysis" aria-current="page">${isClin() ? "Recordings" : "Your recordings"}</a><a href="#/analysis/lab">Controlled experiment</a></nav>`;
   if (!recs.length) {
     $app.innerHTML = `<h1>Voice Analysis Lab</h1>${tabs}<div class="card"><h2>No analysed recordings yet</h2>
       <p class="muted">Each new check-in on this profile is analysed window by window. ${tl && tl.patient.data_mode === "synthetic_demo" ? "Synthetic demo profiles have no window-level data." : ""}
@@ -894,7 +1036,7 @@ function analysisBlock(a, { key, title = "", recordingLabel = "" }) {
       <div class="callout info small" style="margin-top:12px" id="${key}_explain"></div>
     </div>
     <details class="card"><summary>Window-by-window values (table)</summary><div class="tablewrap">${windowTable(a)}</div>
-      <p class="small muted">${esc(a.remainder_rule || "")}. Each window is compared with your baseline's overall reference, not with the same seconds of an earlier recording, because different days contain different words.</p></details>
+      <p class="small muted">${esc(a.remainder_rule || "")}. Each window is compared with ${yb()}'s overall reference, not with the same seconds of an earlier recording, because different days contain different words.</p></details>
     <details class="card"><summary>Calibration and model details</summary><dl class="meta small">
       <dt>Encoder</dt><dd>${esc(m.encoder || a.encoder)}</dd><dt>Projection</dt><dd>${esc(m.projection || "")}</dd>
       <dt>Distance</dt><dd>cosine, per 8 s window</dd>
@@ -923,7 +1065,7 @@ function explain(a) {
   const gaps = wins.filter((w) => w.quality === "REJECT").length;
   const t = (w) => `${w.start_seconds}–${w.end_seconds} s`;
   const out = [];
-  if (a.state === "A") out.push(`Your personal baseline isn't ready (${(a.baseline_progress || []).join("/")} usable recordings), so no comparison is made. ${esc(a.baseline_note || "")}`);
+  if (a.state === "A") out.push(`${isClin() ? "The personal baseline" : "Your personal baseline"} isn't ready (${(a.baseline_progress || []).join("/")} usable recordings), so no comparison is made. ${esc(a.baseline_note || "")}`);
   else if (a.state === "D") out.push(`Recording quality was insufficient for this comparison${a.recording_reasons && a.recording_reasons.length ? ` (${esc(a.recording_reasons.join(", "))})` : ""}. No scores are reported.`);
   else if (a.state === "B") out.push("Window boundaries are not calibrated yet, so no boundary crossings are reported. Distances are drawn on separate scales because the two models measure distance differently.");
   else {
@@ -1025,12 +1167,12 @@ function driftChart(a, show, key) {
     pB = `${show.raw ? mini("raw_distance", "var(--coral)", "Raw WavLM") : ""}${show.proj ? mini("projected_distance", "var(--teal)", "Projected") : ""}`;
   }
   return `<figure><figcaption>Raw vs. Noise-Invariant Speech Drift</figcaption>${pA}${pB}
-    <p class="small muted">Time within this recording (s). Y-axis: each model's distance from your baseline divided by its own window boundary, so one fixed line at 1 serves both.</p></figure>`;
+    <p class="small muted">Time within this recording (s). Y-axis: each model's distance from ${yb()} divided by its own window boundary, so one fixed line at 1 serves both.</p></figure>`;
 }
 
 async function viewLab() {
   $app.innerHTML = `<h1>Voice Analysis Lab</h1>
-    <nav class="tabs" aria-label="Analysis sources"><a href="#/analysis">Your recordings</a><a href="#/analysis/lab" aria-current="page">Controlled experiment</a></nav>
+    <nav class="tabs" aria-label="Analysis sources"><a href="#/analysis">${isClin() ? "Recordings" : "Your recordings"}</a><a href="#/analysis/lab" aria-current="page">Controlled experiment</a></nav>
     ${await labFormHtml()}`;
   wireLab();
 }
@@ -1278,7 +1420,7 @@ async function viewResults() {
       <li>Fagherazzi, Fischer, Ismael &amp; Despotovic. Voice for health: the use of vocal biomarkers from research to clinical practice. Digital Biomarkers 5(1), 2021.</li>
     </ol></section>
 
-    <details class="card" style="margin-top:20px"><summary>Try your own recording (controlled experiment)</summary>${await labFormHtml()}</details>`;
+    <details class="card" style="margin-top:20px"><summary>Try ${isClin() ? "another" : "your own"} recording (controlled experiment)</summary>${await labFormHtml()}</details>`;
   wireLab();
   wireSample(res);
   const runDemo = async (fresh) => {
@@ -1316,16 +1458,18 @@ function wireSnapshot(j) {
 
 // ------------------------------------------------------------------ Trends (session level)
 async function viewTrends() {
-  const days = Number(new URLSearchParams(location.hash.split("?")[1] || "").get("days")) || 30;
-  const tl = await timeline(S.pid, Math.min(days, 365));
+  // a positive whole number of days, capped at 365; anything else (-5, 0, 0.5, "abc") falls back to 30
+  const raw = new URLSearchParams(location.hash.split("?")[1] || "").get("days");
+  const days = /^\d+$/.test(raw || "") && Number(raw) >= 1 ? Math.min(Number(raw), 365) : 30;
+  const tl = await timeline(S.pid, days);
   const cks = tl ? tl.checkins : [];
   const sp = (d, label) => `<a href="#/trends?days=${d}" ${d === days ? 'aria-current="page"' : ""}>${label}</a>`;
   const chips = cks.filter((c) => (c.timing_chips || []).length).slice(-6).reverse();
   $app.innerHTML = `<div class="eyebrow"><span class="line"></span>Trends &amp; signals</div><h1>Voice trends</h1>
-    <p class="lead">One point per check-in, compared with your baseline. These describe your speech and recordings; they are not health measurements.</p>
+    <p class="lead">One point per check-in, compared with ${yb()}. These describe ${isClin() ? "the person's" : "your"} speech and recordings; they are not health measurements.</p>
     <nav class="tabs" aria-label="Time range">${sp(7, "7 days")}${sp(30, "30 days")}${sp(90, "90 days")}${sp(365, "All")}</nav>
     ${!tl ? '<div class="card muted">No check-ins on this profile yet.</div>' : `
-    <section class="card"><h2>Difference from baseline</h2>${tl.baseline ? sessionChart(cks) : `<p class="muted">Shown once your baseline is ready.</p>`}</section>
+    <section class="card"><h2>Difference from baseline</h2>${tl.baseline ? sessionChart(cks) : `<p class="muted">Shown once ${yb()} is ready.</p>`}</section>
     <div id="ptdetail"></div>
     <div class="grid half" style="margin-top:20px">
       <section class="card"><h2>Speech timing</h2>
@@ -1348,7 +1492,7 @@ function wireChartPoints(cks, targetId) {
     g.onclick = show; g.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(); } };
   });
 }
-const sentence = (t) => { const m = t.match(/^(speech|pauses|pause length) (\d+)% (.+) than baseline$/); return m ? `${m[1][0].toUpperCase() + m[1].slice(1)} ${m[1] === "pauses" ? "were" : "was"} ${m[2]}% ${m[3]} than in your baseline recordings.` : t; };
+const sentence = (t) => { const m = t.match(/^(speech|pauses|pause length) (\d+)% (.+) than baseline$/); return m ? `${m[1][0].toUpperCase() + m[1].slice(1)} ${m[1] === "pauses" ? "were" : "was"} ${m[2]}% ${m[3]} than in ${isClin() ? "the person's" : "your"} baseline recordings.` : t; };
 function timingTable(cks) {
   const rows = cks.filter((c) => c.timing && c.timing.speech_rate_wpm != null).slice(-10).reverse();
   if (!rows.length) return "";
@@ -1359,6 +1503,8 @@ function timingTable(cks) {
 // ------------------------------------------------------------------ About & Privacy
 async function viewAbout() {
   const h = await health();
+  const pts = await api("/patients").catch(() => []);
+  const pname = (pts.find((p) => p.id === S.pid) || {}).display_name || (S.pid === LIVE_PID ? "Demo speaker (live)" : S.pid);
   const res = S.results || {};
   const team = res.team || [];
   $app.innerHTML = `<div class="eyebrow"><span class="line"></span>How it works</div><h1>About &amp; Privacy</h1>
@@ -1409,22 +1555,24 @@ async function viewAbout() {
           : ""}<p class="tiny muted">Built at HackPrinceton 2026.</p></section>
     </div>
     <div class="grid half" style="margin-top:20px">
-      <section class="card stack"><h2>${icon("shield")} How your data is handled</h2>
+      <section class="card stack"><h2>${icon("shield")} How ${isClin() ? "" : "your "}data is handled</h2>
         <dl class="meta small">
-          <dt>Audio capture</dt><dd>In your browser, only while you are recording.</dd>
+          <dt>Audio capture</dt><dd>${isClin() ? "In the browser, only while a recording is being made." : "In your browser, only while you are recording."}</dd>
           <dt>Where analysis runs</dt><dd>On this computer's Voice Drift server (127.0.0.1). Audio is uploaded only to it.</dd>
           <dt>Audio retention</dt><dd>The audio file is deleted when analysis finishes, including when it fails.</dd>
           <dt>What is kept</dt><dd>Recording-quality results, comparison scores, per-window speech features (not audio), a coarse loudness summary, and the transcript, in a local database on this computer.</dd>
-          <dt>Transcripts</dt><dd>${h.llm_reachable ? "Sent to Anthropic's API to find quotes for the evidence view. Audio is never sent." : "Not sent anywhere: no language-model key is configured."}</dd>
+          <dt>Transcripts</dt><dd>Reading-passage check-ins (the standard check-in) are never sent to a language-model service: not the audio, not the transcript.
+            ${h.llm_reachable ? "Only for a repeat of an older free-speech check-in is the written transcript sent to Anthropic's API, to find quotes for the evidence view. Audio is never sent." : "No language-model key is configured, so no transcript is sent anywhere."}</dd>
           <dt>Who can see results</dt><dd>Anyone using this app on this computer. There are no accounts, and nothing is sent to a clinician automatically.
             The "Viewing as: Patient / Clinician" switch at the top only changes which pages and wording are shown, for the demo; it is not a login and does not restrict access.</dd>
         </dl>
         <p class="small muted">Derived features are not claimed to be anonymous; they stay on this computer.</p></section>
-      <section class="card stack"><h2>Your data</h2>
-        <p class="small">Delete every check-in, score and transcript stored for the current profile (<strong>${esc(S.pid)}</strong>). This can't be undone.</p>
-        <p><button id="del">Delete this profile's data</button> <span id="delmsg" role="status" class="small"></span></p>
+      <section class="card stack"><h2>${isClin() ? "Stored data" : "Your data"}</h2>
+        <p class="small">Delete every check-in, score and transcript stored for the current profile (<strong>${esc(pname)}</strong>). This can't be undone.</p>
+        <p><button id="del">Delete this profile's data</button> <span id="delmsg" role="status" class="small">${S.flash && S.flash.del ? esc(S.flash.del) : ""}</span></p>
         <hr><h2>Demo &amp; research</h2>
-        <p class="small muted">Synthetic profiles are labelled "Synthetic demo data" everywhere they appear and are kept separate from real recordings.</p>
+        <p class="small muted">Synthetic profiles are labelled "Synthetic demo data" everywhere they appear and are kept separate from real recordings.
+          Loading demo data replaces only the synthetic profiles; recordings on Demo speaker (live) are kept. "blank" also clears the live profile.</p>
         <div class="row">${["all", "stable", "drift", "blank"].map((s) => `<button data-reset="${s}">Load demo: ${s}</button>`).join("")}</div>
         <fieldset class="stack" style="border:1px solid var(--line);border-radius:10px;padding:12px 14px"><legend><strong>Presentation: results section</strong></legend>
           <p class="small muted" style="margin:0">Results file on this server: <strong>${S.results && S.results.aggregate ? `found (generated ${esc(S.results.aggregate.generated_at)})` : "not found"}</strong>. This switch only changes what this browser shows.</p>
@@ -1435,15 +1583,21 @@ async function viewAbout() {
         <p><a href="#/review">${icon("report", 16)} Review queue</a> <span class="small muted">(speech-change reviews; demo, in-app only)</span></p>
       </section>
     </div>`;
+  S.flash = null;
   document.getElementById("del").onclick = async () => {
-    if (!confirm(`Delete all stored data for ${S.pid}? This can't be undone.`)) return;
+    if (!confirm(`Delete all stored data for ${pname}? This can't be undone.`)) return;
     try {
       await api(`/patients/${encodeURIComponent(S.pid)}`, { method: "DELETE" });
-      document.getElementById("delmsg").textContent = "Deleted.";
+      S.flash = { del: `Deleted all stored data for ${pname}.` };   // shown on the refreshed page
+      route();
     } catch (e) { document.getElementById("delmsg").textContent = offlineMsg(e); }
   };
   $app.querySelectorAll('input[name="rmode"]').forEach((r) => (r.onchange = () => { setResultsMode(r.value); route(); }));
   $app.querySelectorAll("[data-reset]").forEach((b) => (b.onclick = async () => {
+    if (b.dataset.reset === "blank") {   // the only scenario that removes real recordings: say how many
+      const n = await api("/demo/live-count").then((j) => j.checkins).catch(() => null);
+      if (n && !confirm(`"Load demo: blank" removes ${n} recording${n === 1 ? "" : "s"} from Demo speaker (live). This can't be undone. Continue?`)) return;
+    }
     b.disabled = true;
     try {
       await post("/demo/reset", { scenario: b.dataset.reset });
@@ -1462,8 +1616,10 @@ const FLAG_STATUS = { OPEN: ["Open", "navy", "info"], ACKNOWLEDGED: ["Acknowledg
   CLOSED: ["Closed", "gray", "check"], DISMISSED: ["Dismissed", "gray", "x"] };
 const flagPill = (s) => pill(FLAG_STATUS[s] || [s, "gray", "info"]);
 async function viewReviewQueue() {
-  const show = new URLSearchParams(location.hash.split("?")[1] || "").get("status") || "pending";
-  const q = { pending: "?status=OPEN,ACKNOWLEDGED", reviewed: "?status=REVIEWED,CLOSED,DISMISSED", all: "" }[show] ?? "";
+  const QS = { pending: "?status=OPEN,ACKNOWLEDGED", reviewed: "?status=REVIEWED,CLOSED,DISMISSED", all: "" };
+  const asked = new URLSearchParams(location.hash.split("?")[1] || "").get("status");
+  const show = Object.prototype.hasOwnProperty.call(QS, asked) ? asked : "pending";                  // an unknown filter in the address means Pending
+  const q = QS[show];
   const flags = await api(`/v1/review-flags${q}`);
   const tab = (k, l) => `<a href="#/review?status=${k}" ${show === k ? 'aria-current="page"' : ""}>${l}</a>`;
   const empty = show === "pending"
@@ -1534,10 +1690,15 @@ async function viewReviewDetail(fid) {
       msg.textContent = "Add a note with the reason before closing or dismissing."; return;
     }
     try {
+      b.disabled = true;
       await post(`/v1/review-flags/${encodeURIComponent(fid)}/actions`, { action: b.dataset.act, actor: "reviewer_demo", note: document.getElementById("rnote").value });
-      await viewReviewDetail(fid); renderTopbar();
-      if (b.dataset.act === "request_repeat") document.getElementById("ractmsg").textContent = "Repeat requested. The person will see it on their Home page.";
-    } catch (e) { msg.textContent = "That action isn't allowed now (" + e.message + ")."; }
+      await route();                      // full re-render: ribbon, topbar count and page together
+      const m = document.getElementById("ractmsg");
+      if (m) m.textContent = b.dataset.act === "request_repeat" ? "Repeat requested. The person will see it on their Home page." : "Saved.";
+    } catch (e) {
+      b.disabled = false;
+      msg.textContent = isNetErr(e) ? OFFLINE_TEXT : "That action isn't allowed now (" + e.message + ").";
+    }
   }));
 }
 
@@ -1545,12 +1706,14 @@ async function viewReviewDetail(fid) {
 async function viewResearch() {
   const list = await api("/patients");
   $app.innerHTML = `<div class="eyebrow"><span class="line"></span>Clinician view</div><h1>Patients</h1><p class="lead">All profiles on this computer. Neutral comparison labels only; no risk scores. Pending reviews are in the <a href="#/review">review queue</a>.</p>
-    <div class="card tablewrap"><table><thead><tr><th>Profile</th><th>Data</th><th>Latest comparison</th><th>Last check-in</th><th class="num">Open notes</th></tr></thead><tbody>
-      ${list.map((p) => `<tr class="click" data-id="${esc(p.id)}" tabindex="0"><td>${esc(p.display_name)}</td><td>${modeTag(p.data_mode)}</td><td>${statusPill(p.status)}</td><td>${p.last_checkin ? fmtDT(p.last_checkin) : "&ndash;"}</td><td class="num">${p.open_alerts}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No profiles yet.</td></tr>'}
+    <div class="card tablewrap"><table><thead><tr><th>Profile</th><th>Data</th><th>Latest comparison</th><th>Last check-in</th><th class="num">Open reviews</th></tr></thead><tbody>
+      ${list.map((p) => `<tr class="click" data-id="${esc(p.id)}" tabindex="0"><td>${esc(p.display_name)}</td><td>${modeTag(p.data_mode)}</td><td>${statusPill(p.status)}</td><td>${p.last_checkin ? fmtDT(p.last_checkin) : "&ndash;"}</td>
+        <td class="num">${p.open_review_flags ? `<a href="#/review" data-noclick>${p.open_review_flags}</a>` : "0"}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No profiles yet.</td></tr>'}
     </tbody></table></div>`;
   $app.querySelectorAll("tr.click").forEach((tr) => {
     const go = () => (location.hash = "#/research/" + encodeURIComponent(tr.dataset.id));
-    tr.onclick = go; tr.onkeydown = (e) => { if (e.key === "Enter") go(); };
+    tr.onclick = (e) => { if (!e.target.closest("[data-noclick]")) go(); };   // the review count links to the queue
+    tr.onkeydown = (e) => { if (e.key === "Enter" && !e.target.closest("[data-noclick]")) go(); };
   });
 }
 
@@ -1570,8 +1733,16 @@ async function viewResearchDetail(pid) {
       ${c ? checkinDetail(c) : ""}`;
     $app.querySelectorAll("[data-ck]").forEach((el) => (el.onclick = (ev) => { ev.preventDefault(); sel = el.dataset.ck; render(); }));
     $app.querySelectorAll("[data-ack]").forEach((b) => (b.onclick = async () => {
-      await post(`/alerts/${b.dataset.ack}/ack`, { clinician: "researcher", note: $app.querySelector(`#note_${b.dataset.ack}`).value });
-      viewResearchDetail(pid);
+      b.disabled = true;
+      b.parentElement.querySelector(".ackmsg")?.remove();
+      try {
+        await post(`/alerts/${encodeURIComponent(b.dataset.ack)}/ack`, { clinician: "researcher", note: $app.querySelector(`#note_${b.dataset.ack}`).value });
+        await route();                    // full re-render, ribbon and topbar included
+      } catch (e) {
+        b.disabled = false;
+        b.insertAdjacentHTML("afterend", `<span class="ackmsg small" role="alert" style="color:var(--amber-ink)">${esc(isNetErr(e) ? OFFLINE_TEXT
+          : `Couldn't mark this reviewed (${e.status === 404 ? "the note no longer exists; reload the page" : e.message}).`)}</span>`);
+      }
     }));
   };
   render();
@@ -1591,7 +1762,7 @@ function checkinDetail(c) {
     <div class="row"><h2 style="margin:0">Check-in ${fmtDT(c.created_at)}</h2>${statusPill(c.status)}${modeTag(c.data_mode)}${c.acted ? '<span class="mode synthetic_demo">acted</span>' : ""}</div>
     <p class="small">${qualityPill(c.quality.verdict)} &middot; speech ${fmt(c.quality.speech_s, 0)} s &middot; SNR ${fmt(c.quality.snr_db, 0)} dB${c.environment ? " &middot; " + esc(c.environment) : ""}</p>
     ${safety ? `<div class="support"><p class="big">Support resources were shown</p><p>No scores are displayed for this check-in.</p></div>` : ""}
-    ${!safety && c.drift ? `<p>Difference from baseline: <strong>${fmt(c.drift.d / c.drift.tau)}</strong> &times; the session boundary${c.drift.confirmed ? " (sustained over recent check-ins)" : ""}.</p>` : !safety ? '<p class="muted">Baseline check-in: not compared.</p>' : ""}
+    ${!safety && c.drift ? `<p>Difference from baseline: <strong>${fmt(ratio(c))}</strong> &times; the session boundary${c.drift.confirmed ? " (sustained over recent check-ins)" : ""}.</p>` : !safety ? '<p class="muted">Baseline check-in: not compared.</p>' : ""}
     ${(c.timing_chips || []).length ? `<p class="small">${c.timing_chips.map((x) => esc(sentence(x.text))).join(" ")}</p>` : ""}
     <p class="tiny muted">Task: ${esc((c.protocol || {}).prompt_id || "default")} (${esc((c.protocol || {}).task_type || "free_speech")})${c.checkin_type === "verification" ? ` &middot; repeat of an earlier check-in${c.verification ? `: ${esc((VRESULT[c.verification.result] || [c.verification.result])[0])}` : ""}` : ""}</p>
     ${c.comparison ? `<p class="small callout caution">${esc(c.comparison.message)}</p>` : ""}

@@ -126,12 +126,20 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     # ------------------------------------------------------------------ check-ins
     @app.post("/api/patients/{pid}/checkins", status_code=202)
     async def post_checkin(pid: str, audio: UploadFile = File(...), prompt_id: str = Form("default"),
-                           interventions: str = Form(""), verification_of: str = Form("")):
+                           interventions: str = Form(""), verification_of: str = Form(""),
+                           tz_offset_min: str = Form("")):
         try:   # noise events marked live during recording (JSON list); malformed input is ignored, never fatal
             ivs = json.loads(interventions) if interventions else []
             ivs = ivs if isinstance(ivs, list) else []
         except ValueError:
             ivs = []
+        meta = {}
+        try:   # the browser's time zone, so the review rule's "separate days" are the person's own days
+            off = int(tz_offset_min)
+            if -840 <= off <= 840:
+                meta["tz_offset_min"] = off
+        except ValueError:
+            pass
         if prompt_id not in protocol.PROMPTS:
             raise HTTPException(422, "unknown prompt_id")
         r = rt()
@@ -162,7 +170,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             path.unlink(missing_ok=True)
             raise
         r.bus.emit(cid, "stage", {"stage": "received", "ms": 0})
-        threading.Thread(target=r.process, args=(cid, pid, path, prompt_id, ivs[:20], verification_of or None),
+        threading.Thread(target=r.process, args=(cid, pid, path, prompt_id, ivs[:20], verification_of or None, meta),
                          daemon=True).start()
         return {"checkin_id": cid}
 
@@ -213,6 +221,23 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     @app.get("/api/checkins/{cid}/events")
     async def events(cid: str, role: str = "clinician"):
         r = rt()
+        if not r.bus.get(cid):
+            # Not being analysed by this server process: either already finished (e.g. the browser reconnected after
+            # the result was sent, or the server restarted) or unknown. Never stream keep-alives for either.
+            with store.session() as s:
+                ck = s.get(store.Checkin, cid)
+                if ck is None:
+                    raise HTTPException(404, "unknown check-in")
+                res = scoring.result_json(ck)
+                if ck.status != "SAFETY":
+                    res.update(review_info(s, ck))
+            ev = _strip({"event": "result", "data": res}, role)
+
+            async def once():
+                yield f"event: result\ndata: {json.dumps(ev['data'], default=str)}\n\n"
+
+            return StreamingResponse(once(), media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
         async def gen():
             seen, idle = 0, 0
@@ -366,14 +391,25 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             raise HTTPException(422, "scenario must be stable|drift|all|blank")
         # simulated scenarios live in the fallback drift space they were generated in (never the loaded model's)
         done = [load_scenario(n, drift_space(True)[0]) for n in names[body.scenario]]
-        if body.scenario in ("blank", "all"):
+        # Only "blank" clears the live profile: loading the synthetic scenarios never removes real recordings
+        # ("all" only creates the live profile if it doesn't exist yet).
+        if body.scenario == "blank":
             store.purge_patient("p_demo")
+        if body.scenario in ("blank", "all"):
             with store.session() as s:
-                s.add(store.Patient(id="p_demo", display_name="Demo speaker (live)", consent_at=store.utcnow(),
-                                    **demo_enrollment()))
-                s.commit()
+                if s.get(store.Patient, "p_demo") is None:
+                    s.add(store.Patient(id="p_demo", display_name="Demo speaker (live)", consent_at=store.utcnow(),
+                                        **demo_enrollment()))
+                    s.commit()
             done.append("p_demo")
         return {"patients": done}
+
+    @app.get("/api/demo/live-count")
+    def live_count():
+        """How many recordings "Load demo: blank" would remove from the live profile (for its confirmation)."""
+        with store.session() as s:
+            return {"patient_id": "p_demo",
+                    "checkins": len(s.exec(select(store.Checkin).where(store.Checkin.patient_id == "p_demo")).all())}
 
     @app.get("/api/checkins/{cid}/windows")
     def checkin_windows(cid: str):
@@ -445,10 +481,14 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     @app.get("/api/v1/review-flags")
     def list_flags(status: str | None = None, reviewer: str | None = None, since: str | None = None,
                    data_mode: str | None = None):
+        wanted = [x.strip().upper() for x in status.split(",") if x.strip()] if status else []
+        known = {"OPEN", "ACKNOWLEDGED", "REVIEWED", "CLOSED", "DISMISSED"}
+        if set(wanted) - known:
+            raise HTTPException(422, f"unknown status {sorted(set(wanted) - known)}; use {sorted(known)}")
         with store.session() as s:
             q = select(store.ReviewFlag)
-            if status:
-                q = q.where(store.ReviewFlag.status.in_([x.strip().upper() for x in status.split(",")]))
+            if wanted:
+                q = q.where(store.ReviewFlag.status.in_(wanted))
             if reviewer:
                 q = q.where(store.ReviewFlag.assigned_reviewer_id == reviewer)
             if data_mode:

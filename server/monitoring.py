@@ -57,6 +57,22 @@ def baseline_version(prev: list[store.Checkin]) -> str | None:
     return "bl_" + hashlib.sha1("|".join(c.id for c in rows).encode()).hexdigest()[:10]
 
 
+def local_day(ck: store.Checkin):
+    """The calendar day the person recorded on, in their own time zone. Check-ins are stamped in UTC; the browser
+    sends its offset (JavaScript getTimezoneOffset: minutes, UTC minus local). Without one (seeded data, older
+    check-ins) the UTC date is used. Two recordings one evening either side of midnight UTC are one day, not two."""
+    off = (ck.extra or {}).get("tz_offset_min")
+    if isinstance(off, (int, float)) and -840 <= off <= 840:
+        return (ck.created_at - timedelta(minutes=off)).date()
+    return ck.created_at.date()
+
+
+def flag_id_for(patient_id: str, rule_id: str, checkin_id: str) -> str:
+    """Stable id from the inputs that define the flag: loading the same demo data again gives the same id, so an open
+    tab or bookmark on a review keeps working. One check-in can trigger at most one flag per rule."""
+    return "flag_" + hashlib.sha1(f"{patient_id}|{rule_id}|{checkin_id}".encode()).hexdigest()[:12]
+
+
 def session_eval(ck: store.Checkin, prev: list[store.Checkin]) -> dict:
     """Score + eligibility of ONE check-in (gates E1-E3). `prev` = the patient's earlier check-ins."""
     v = ck.versions or {}
@@ -87,7 +103,8 @@ def session_eval(ck: store.Checkin, prev: list[store.Checkin]) -> dict:
     calib = (f"illustrative-seed:tau={tau:.4f}" if mode == "synthetic_demo" else f"{artifacts}:tau={tau:.4f}") if tau else None
     context = "|".join([encoder, artifacts, bver or "-", calib or "-"])
     r = d / tau if (d is not None and tau) else None
-    return {"checkin_id": ck.id, "recorded_at": ck.created_at, "eligible": not reasons, "reasons": reasons,
+    return {"checkin_id": ck.id, "recorded_at": ck.created_at, "local_day": local_day(ck),
+            "eligible": not reasons, "reasons": reasons,
             "distance": d, "threshold": tau, "normalized_score": round(r, 4) if r is not None else None,
             "exceeded": (r > 1) if r is not None else None, "context": context, "encoder": encoder,
             "projection": artifacts, "baseline_id": bver, "calibration_id": calib, "data_mode": mode,
@@ -150,7 +167,7 @@ def evaluate(s: Session, patient_id: str, checkin_id: str, actor: str = "system"
     window = [e for e in evals if e["eligible"] and e["context"] == me["context"] and e["recorded_at"] >= lo]
     window = window[-int(c["window_sessions"]):]
     elevated = [e for e in window if e["exceeded"]]
-    days = {e["recorded_at"].date() for e in elevated}
+    days = {e["local_day"] for e in elevated}
     out["persistence"] = {"eligible_sessions": len(window), "elevated_sessions": len(elevated),
                           "distinct_days": len(days), "window_checkins": [e["checkin_id"] for e in window],
                           "rule_satisfied": False}
@@ -197,7 +214,7 @@ def evaluate(s: Session, patient_id: str, checkin_id: str, actor: str = "system"
         return _store(s, key, patient_id, ck.id, out)
 
     flag = store.ReviewFlag(
-        flag_id=store.new_id("flag"), patient_id=patient_id, rule_id=rid, rule_version=c["rule_version"],
+        flag_id=flag_id_for(patient_id, rid, ck.id), patient_id=patient_id, rule_id=rid, rule_version=c["rule_version"],
         monitoring_context_id=me["context"], status="OPEN", data_mode=me["data_mode"],
         created_at=ck.created_at, assigned_reviewer_id=p.assigned_reviewer_id or c["default_reviewer"],
         summary={"explanation": EXPLANATION.format(n=len(elevated), w=len(window), d=len(days)),
