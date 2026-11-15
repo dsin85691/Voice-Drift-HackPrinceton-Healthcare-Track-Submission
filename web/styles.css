@@ -125,6 +125,10 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .btn.lime, button.lime { background: var(--lime); border-color: var(--lime); color: #18392D; }
 .btn.lime:hover, button.lime:hover { background: #E3F5B7; }
 .btn.ghost-light { background: transparent; border-color: transparent; color: #E0F0DF; }
+/* a button that reads as an inline link (e.g. "Re-run live" next to a cached result) */
+button.linklike { background: none; border: 0; min-height: 0; padding: 0 2px; font-size: inherit; font-weight: 700;
+  color: var(--teal-ink); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; transform: none; }
+button.linklike:hover { background: none; color: #1F4D3E; transform: none; }
 .btn.ghost-light:hover { background: #ffffff14; }
 .btn.big, button.big { min-height: 56px; padding: 14px 26px; font-size: 18px; }
 button:disabled { opacity: .55; cursor: not-allowed; }

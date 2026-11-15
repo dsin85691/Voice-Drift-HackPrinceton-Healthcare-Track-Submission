@@ -8,7 +8,8 @@ server:
 
 audio:
   sample_rate: 16000
-  min_s: 20
+  min_s: 18     # recordings must be >= 18 s of audio. The guidance says 20 s and the Stop button unlocks at 23 s:
+                # browser recordings come out 0.3-2 s shorter than the on-screen timer (measured: 19.68 s and 17.88 s)
   max_s: 90
   window_s: 8.0
   min_tail_s: 4.0

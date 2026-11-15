@@ -136,9 +136,15 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             raise HTTPException(422, "unknown prompt_id")
         r = rt()
         with store.session() as s:
-            if s.get(store.Patient, pid) is None:
+            p = s.get(store.Patient, pid)
+            if p is None:
                 s.add(store.Patient(id=pid, display_name=pid, consent_at=store.utcnow(), **demo_enrollment()))
                 s.commit()
+            elif p.simulated:
+                # synthetic seeds live in a different feature space and an older speaking task: a real recording
+                # compared with them would be meaningless, so it is refused rather than shown as "not compared"
+                raise HTTPException(409, "this is a synthetic demo profile; real recordings can't be compared with it. "
+                                         "Switch to a live profile to record.")
             if verification_of:   # F3: a repeat of an earlier check-in, same patient, same passage
                 orig = s.get(store.Checkin, verification_of)
                 if orig is None or orig.patient_id != pid:
@@ -604,7 +610,16 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             j = json.loads(p.read_text())
         except (OSError, ValueError):
             return None
-        return j if j.get("cache_key") == cache_key(kind) else None      # stale -> never served
+        if j.get("cache_key") != cache_key(kind):
+            return None                                                   # stale -> never served
+        if kind == "sample":
+            # the result links to the sample speaker's check-in and trend: if that data is gone (profile deleted,
+            # fresh database), the snapshot would point at an empty page, so treat it as stale and re-measure
+            cid = (j.get("checkin") or {}).get("checkin_id")
+            with store.session() as s:
+                if not cid or s.get(store.Checkin, cid) is None:
+                    return None
+        return j
 
     def save_snap(kind: str, out: dict, t0: float) -> dict:
         import time as _t

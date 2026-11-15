@@ -65,6 +65,24 @@ def test_demo_cache_is_served_instantly_never_stale_and_warm_fills_both(client, 
     assert client.post("/api/demo/run").json()["cached"] is False             # re-measured with the new setting
 
 
+def test_sample_cache_is_stale_once_its_checkin_is_gone(client):
+    first = client.post("/api/demo/sample").json()
+    assert client.post("/api/demo/sample").json()["cached"] is True
+    assert client.delete("/api/patients/p_sample").status_code == 200       # e.g. profile deleted / fresh database
+    assert client.get("/api/results").json()["sample_snapshot"] is None
+    again = client.post("/api/demo/sample").json()
+    assert again["cached"] is False and again["checkin"]["checkin_id"] != first["checkin"]["checkin_id"]
+    assert client.get(f"/api/checkins/{again['checkin']['checkin_id']}").status_code == 200
+
+
+def test_real_recordings_are_refused_on_synthetic_profiles(client, wav_bytes):
+    client.post("/api/demo/reset", json={"scenario": "drift"})
+    r = client.post("/api/patients/p_drift/checkins", files={"audio": ("a.wav", wav_bytes(seconds=40), "audio/wav")},
+                    data={"prompt_id": "standard_reading_v1"})
+    assert r.status_code == 409 and "synthetic demo profile" in r.json()["detail"]
+    assert list(client.tmp_path.iterdir()) == []                              # nothing written for the refused upload
+
+
 def test_missing_sample_audio_is_a_clear_409_not_a_crash(client, monkeypatch):
     from server.config import get_config
     monkeypatch.setitem(get_config()["demo"], "sample", {**get_config()["demo"]["sample"], "recording": "nope.wav"})

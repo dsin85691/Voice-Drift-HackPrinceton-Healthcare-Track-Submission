@@ -2,7 +2,9 @@
 // All numbers shown come from the backend. Missing values are shown as missing, never as zero.
 const $app = document.getElementById("app");
 const DEMO = new URLSearchParams(location.search).get("demo") === "1";
-const MIN_S = 20, MAX_S = 60;
+// Browser recordings come out 0.3-2 s shorter than the on-screen timer (mic start-up, last chunk on stop), so Stop
+// unlocks at 23 s to land safely above the server's minimum. The guidance to the person stays "at least 20 seconds".
+const MIN_S = 23, MAX_S = 60;
 
 // ------------------------------------------------------------------ helpers
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -440,6 +442,18 @@ async function viewCheckin() {
     const orig = await api(`/checkins/${encodeURIComponent(verify)}`).catch(() => null);
     if (orig && orig.protocol) promptId = orig.protocol.prompt_id;
   }
+  // Synthetic demo profiles can't take real recordings (different feature space and task): say so before recording
+  const ptl = await timeline(S.pid, 1).catch(() => null);
+  if (ptl && ptl.patient && ptl.patient.data_mode === "synthetic_demo") {
+    $app.innerHTML = `<div class="card stack"><div class="eyebrow"><span class="line"></span>Acoustic check-in</div>
+      <h1>${esc(ptl.patient.display_name)} is a synthetic demo profile</h1>
+      <p>Its check-ins are generated for the demo, to illustrate the monitoring and review workflow, so a real recording can't be compared with them.
+        To record, switch to the live profile. Its baseline is your own first five readings.</p>
+      <p><button class="primary" id="tolive">${icon("mic")}Switch to Demo speaker (live) and record</button></p>
+      <p class="small muted">To see ${esc(ptl.patient.display_name)}'s review, switch the view to Clinician at the top.</p></div>`;
+    document.getElementById("tolive").onclick = () => { setPid("p_demo"); route(); };
+    return;
+  }
   const prompt = await api(`/prompt?prompt_id=${encodeURIComponent(promptId)}`);
   const reading = prompt.task_type === "read_speech";
   $app.innerHTML = `
@@ -463,7 +477,7 @@ async function viewCheckin() {
         <p id="hint" class="small" aria-live="polite">&nbsp;</p>
         <div class="row" style="justify-content:center">
           <button class="primary big" id="rec">${icon("mic", 22)}Start recording</button>
-          <button id="stop" disabled>Stop &amp; submit (after 0:20)</button>
+          <button id="stop" disabled>Stop &amp; submit (after 0:${MIN_S})</button>
           <button id="cancel" disabled>Cancel</button>
         </div>
         ${DEMO ? `<div class="row"><button id="noisemark" disabled>Mark noise start</button><span class="small muted" id="noiselog">Demo: mark when background noise starts and stops.</span></div>` : ""}
@@ -476,7 +490,7 @@ async function viewCheckin() {
     <div class="callout info small" style="margin-top:16px"><h3>${icon("shield", 16)} Your recording</h3>
       Audio is sent only to this computer's Voice Drift server, analysed there, and the audio file is deleted afterwards.
       ${reading ? "Reading-passage recordings are never sent to a language-model service." : "A written transcript may be sent to a language-model service to find quotes."}
-      You can stop after 20 seconds; most people finish the passage in under a minute. See <a href="#/about">About &amp; Privacy</a>.</div>`;
+      Please read the whole passage (about 40 seconds); the Stop button unlocks after ${MIN_S} seconds. See <a href="#/about">About &amp; Privacy</a>.</div>`;
   const $ = (id) => document.getElementById(id);
   const rec = $("rec"), stop = $("stop"), cancel = $("cancel"), arc = $("arc"), clock = $("clock"), lvl = $("lvl"), hint = $("hint"), status = $("status");
   let stream, mr, chunks = [], ctx, raf, t0, timer, stopped = false;
@@ -490,7 +504,12 @@ async function viewCheckin() {
     else { marks.push({ type: "controlled_background_noise", start_seconds: +elapsed().toFixed(2), end_seconds: null, source: "live_marker" }); noiseBtn.textContent = "Mark noise end"; }
     $("noiselog").textContent = marks.map((m) => `noise ${m.start_seconds}s to ${m.end_seconds ?? "..."}s`).join(", ");
   };
-  const finish = () => { cancelAnimationFrame(raf); clearInterval(timer); stream?.getTracks().forEach((t) => t.stop()); ctx?.close(); };
+  const finish = () => {
+    cancelAnimationFrame(raf); clearInterval(timer); stream?.getTracks().forEach((t) => t.stop());
+    // finish() runs on stop AND on navigation; closing an already-closed AudioContext throws InvalidStateError
+    if (ctx && ctx.state !== "closed") ctx.close().catch(() => {});
+    ctx = null;
+  };
   cleanup = () => { stopped = true; finish(); if (mr && mr.state !== "inactive") mr.stop(); };
 
   rec.onclick = async () => {
@@ -645,7 +664,7 @@ function demoWarmMsg(res, have) {
 function provenance(j) {
   if (!j || !j.ran_at) return "";
   return `<p class="tiny muted" style="margin:6px 0 0">${j.cached ? "Measured" : "Measured just now"} ${j.cached ? `on ${esc(fmtDT(j.ran_at))} ` : ""}by this server with ${esc(j.model || "")}${j.compute_seconds != null ? `; the analysis took ${j.compute_seconds} s` : ""}. ${j.cached ? "Shown from that measurement, which is reused only while the code, model and audio are unchanged." : ""}
-    <button class="linklike" data-fresh="${j.label ? "sample" : "replay"}" style="min-height:0;padding:2px 8px;font-size:13px">Re-run live</button></p>`;
+    <button type="button" class="linklike" data-fresh="${j.label ? "sample" : "replay"}">Re-run live</button></p>`;
 }
 function sampleResultHtml(j) {
   const c = j.checkin;
@@ -1061,8 +1080,10 @@ function aucTable(agg) {
   return `<h3>Threshold-free check: does changed speech rank above noise?</h3>
     <p class="small muted">AUC = the chance that a session with changed speech is further from baseline than the same kind of session with only noise added at 10 dB. 0.5 = no better than chance, 1 = always. No boundary is involved.</p>
     <div class="tablewrap"><table><thead><tr><th scope="col">Changed speech vs noise only</th>${models.map((m) => `<th scope="col" class="num">${MODEL_NAME[m]}</th>`).join("")}<th scope="col" class="num">P1 minus raw (paired)</th></tr></thead><tbody>
-    ${cs.map((c) => `<tr><td>${esc(COND_LABEL(agg, c))}</td>${models.map((m) => `<td class="num"><strong>${A[m][c].value == null ? "&ndash;" : A[m][c].value.toFixed(2)}</strong><br><span class="tiny muted">${A[m][c].ci[0] == null ? "" : `${A[m][c].ci[0].toFixed(2)}–${A[m][c].ci[1].toFixed(2)}`}</span></td>`).join("")}
-      <td class="num">${PD && PD.auc[c] && PD.auc[c].diff != null ? `<strong>${PD.auc[c].diff > 0 ? "+" : ""}${PD.auc[c].diff.toFixed(2)}</strong><br><span class="tiny muted">${PD.auc[c].ci[0].toFixed(2)} to ${PD.auc[c].ci[1].toFixed(2)} &middot; ${PD.auc[c].excludes_zero ? "excludes 0" : "includes 0"}</span>` : "&ndash;"}</td></tr>`).join("")}
+    ${cs.map((c) => { const cell = (r) => (r || {}).value; const iv = (r) => (r && r.ci && r.ci[0] != null && r.ci[1] != null ? `${r.ci[0].toFixed(2)}–${r.ci[1].toFixed(2)}` : "");
+      const d = PD && PD.auc && PD.auc[c], dOk = d && d.diff != null, dIv = dOk && d.ci && d.ci[0] != null && d.ci[1] != null;
+      return `<tr><td>${esc(COND_LABEL(agg, c))}</td>${models.map((m) => `<td class="num"><strong>${cell(A[m][c]) == null ? "&ndash;" : cell(A[m][c]).toFixed(2)}</strong><br><span class="tiny muted">${iv(A[m][c])}</span></td>`).join("")}
+      <td class="num">${dOk ? `<strong>${d.diff > 0 ? "+" : ""}${d.diff.toFixed(2)}</strong><br><span class="tiny muted">${dIv ? `${d.ci[0].toFixed(2)} to ${d.ci[1].toFixed(2)} &middot; ${d.excludes_zero ? "excludes 0" : "includes 0"}` : "no interval"}</span>` : "&ndash;"}</td></tr>`; }).join("")}
     </tbody></table></div>`;
 }
 function sweepChart(agg) {
@@ -1138,7 +1159,7 @@ async function viewResults() {
   const res = S.results || await api("/results");
   const agg = res.aggregate, h = agg && agg.headline, snap = res.demo_snapshot, d = res.demo;
   const canRun = d.clip_present && d.profile_baseline_ready;
-  const why = !d.clip_present ? `Add a consented 40–60 s recording at <code>demo/clip.wav</code> to enable it.`
+  const why = !d.clip_present ? "The bundled demo audio is missing from this deployment, so this demo is unavailable. Everything else still works."
     : !d.profile_baseline_ready ? `The clip is compared with the baseline of <strong>${esc(d.profile)}</strong>, which needs 5 good check-ins from the same speaker first.` : "";
   const v2 = isV2(agg);
   const ca = res.calibration_artifacts || {};
