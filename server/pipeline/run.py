@@ -205,6 +205,19 @@ class Runtime:
         store.log_event(cid, "quality", lat["decode"])
         emit("stage", {"stage": "quality", "ms": lat["decode"], "data": q.to_json()})
 
+        # Speech-to-text and the acoustic embedding are independent, so they run at the SAME time (this halves the
+        # wall-clock time of a check-in on CPU). The safety screen still gates everything: if the transcript trips it,
+        # the embedding is simply discarded, so what is stored and shown is exactly as before.
+        t_par = time.perf_counter()
+
+        def acoustic_job():
+            t0 = time.perf_counter()
+            e = self.acoustic.embed(x, q.speech_mask)
+            d = self.reference.score(x)
+            lat["acoustic"] = ms(t0)
+            return e, d
+
+        fa = self.pool.submit(acoustic_job) if q.verdict != "REJECT" else None
         t = time.perf_counter()
         tr = self.asr.transcribe(x)
         lat["asr"] = ms(t)
@@ -215,17 +228,7 @@ class Runtime:
         scored = q.verdict != "REJECT" and not lex
 
         emb = dam = lang = None
-        t_par = time.perf_counter()
         if scored:
-            def acoustic_job():
-                t0 = time.perf_counter()
-                e = self.acoustic.embed(x, q.speech_mask)
-                d = self.reference.score(x)
-                lat["acoustic"] = ms(t0)
-                store.log_event(cid, "scores", lat["acoustic"])
-                emit("stage", {"stage": "scores", "ms": lat["acoustic"], "data": {}})
-                return e, d
-
             def llm_job():
                 t0 = time.perf_counter()
                 r = self.language.analyze(tr.text)
@@ -236,9 +239,10 @@ class Runtime:
 
             # A fixed reading passage says nothing about how the person feels: never mine it for symptom language.
             reading = protocol.get(prompt_id)["task_type"] == "read_speech"
-            fa = self.pool.submit(acoustic_job)
             fl = None if reading else self.pool.submit(llm_job)
             emb, dam = fa.result()
+            store.log_event(cid, "scores", lat["acoustic"])
+            emit("stage", {"stage": "scores", "ms": lat["acoustic"], "data": {}})
             if reading:
                 emit("stage", {"stage": "evidence", "ms": 0, "data": {"skipped": True}})
                 lang = {"available": False, "evidence": [], "evidence_dropped": 0, "summary": "",
@@ -246,6 +250,8 @@ class Runtime:
             else:
                 lang = fl.result()
         else:
+            if fa is not None:            # safety path: the embedding finishes in the background and is discarded
+                fa.add_done_callback(lambda f: f.exception())
             for st in ("scores", "evidence"):
                 emit("stage", {"stage": st, "ms": 0, "data": {"skipped": True}})
         lat["parallel"] = ms(t_par)

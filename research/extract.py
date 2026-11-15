@@ -62,9 +62,47 @@ def load_wavlm(name: str = "microsoft/wavlm-base", revision: str = "main", devic
     from transformers import WavLMModel
 
     # safetensors only: avoids also downloading pytorch_model.bin (378 MB twice) and never unpickles weights
-    m = WavLMModel.from_pretrained(name, revision=revision, use_safetensors=True).to(device).eval()
+    try:
+        m = WavLMModel.from_pretrained(name, revision=revision, use_safetensors=True)
+    except OSError:
+        m = _wavlm_from_cache(name, revision)      # offline (HF_HUB_OFFLINE=1): see below
+    m = m.to(device).eval()
     for p in m.parameters():
         p.requires_grad_(False)
+    return m
+
+
+def _wavlm_from_cache(name: str, revision: str):
+    """Offline fallback. microsoft/wavlm-base publishes safetensors only on the Hub's auto-conversion PR (refs/pr/1),
+    so the cache holds config.json under `main` and model.safetensors under a different snapshot. Online,
+    transformers follows that PR; offline it cannot. Rebuild the model from the cached config + cached safetensors,
+    loading STRICTLY so any mismatch raises instead of silently producing a wrong model."""
+    import glob
+    import os
+
+    from safetensors.torch import load_file
+    from transformers import WavLMConfig, WavLMModel
+
+    cfg = WavLMConfig.from_pretrained(name, revision=revision, local_files_only=True)
+    path = None
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        for rev in (revision, "refs/pr/1"):
+            p = try_to_load_from_cache(name, "model.safetensors", revision=rev)
+            if isinstance(p, str) and os.path.exists(p):
+                path = p
+                break
+    except Exception:
+        path = None
+    if path is None:
+        hub = os.environ.get("HF_HUB_CACHE") or os.path.join(
+            os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), "hub")
+        hits = glob.glob(os.path.join(hub, "models--" + name.replace("/", "--"), "snapshots", "*", "model.safetensors"))
+        path = hits[0] if hits else None
+    if path is None:
+        raise OSError(f"{name}: no cached model.safetensors (run once online to download it)")
+    m = WavLMModel(cfg)
+    m.load_state_dict(load_file(path), strict=True)
     return m
 
 

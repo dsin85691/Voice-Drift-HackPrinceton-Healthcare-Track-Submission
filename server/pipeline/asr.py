@@ -23,9 +23,12 @@ class ASR:
     def __init__(self):
         self.model = None
         self.engine = "unavailable"
-        self._load(("cuda", "cpu"))
+        dev = str(get_config().models.get("asr_device", "auto"))
+        # "cpu" skips a GPU attempt that fails at the first transcription on machines without the CUDA libraries
+        self._load(("cpu",) if dev == "cpu" else ("cuda",) if dev == "cuda" else ("cuda", "cpu"))
 
     def _load(self, devices) -> None:
+        import os
         cfg = get_config()
         self.model, self.engine = None, "unavailable"
         try:
@@ -33,16 +36,19 @@ class ASR:
         except ImportError:
             log.warning("faster-whisper not installed: transcripts unavailable")
             return
+        threads = int(cfg.models.get("asr_cpu_threads", 0) or 0) or max(1, (os.cpu_count() or 4) // 2)
         for dev in devices:  # CPU fallback (spec 11)
             try:
-                self.model = WhisperModel(cfg.models["asr"], device=dev, compute_type="int8")
+                self.model = WhisperModel(cfg.models["asr"], device=dev, compute_type="int8",
+                                          **({"cpu_threads": threads} if dev == "cpu" else {}))
                 self.engine = f"{cfg.models['asr']}-int8-{dev}"
                 return
             except Exception as e:
                 log.warning("ASR on %s failed: %s", dev, e)
 
     def _run(self, x: np.ndarray) -> Transcript:
-        segs, _ = self.model.transcribe(x, word_timestamps=True, vad_filter=True, language="en")
+        beam = int(get_config().models.get("asr_beam_size", 5) or 5)
+        segs, _ = self.model.transcribe(x, word_timestamps=True, vad_filter=True, language="en", beam_size=beam)
         words, parts = [], []
         for s in segs:            # segments are lazy: CUDA library errors surface here, not at load time
             parts.append(s.text.strip())

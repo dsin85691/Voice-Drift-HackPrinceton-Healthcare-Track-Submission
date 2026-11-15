@@ -55,6 +55,9 @@ models:
   wavlm_revision: main      # PIN to a commit hash before the demo
   asr: small.en
   asr_compute: int8
+  asr_device: cpu        # cpu | cuda | auto. "cpu": this laptop's GPU driver is too old for CUDA, so skip the attempt
+  asr_cpu_threads: 0     # 0 = half the cores, leaving the rest for WavLM, which now runs at the same time
+  asr_beam_size: 1       # greedy decoding: measured 24 s -> 20 s for a 65 s reading, same 122 words (read passage)
   dam_repo: KintsugiHealth/dam
   dam_ckpt: dam3.1.ckpt
   dam_revision: main        # PIN to a commit hash before the demo
