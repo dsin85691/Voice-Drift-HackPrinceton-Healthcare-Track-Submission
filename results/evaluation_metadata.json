@@ -1,0 +1,74 @@
+{
+ "generated_at": "2026-11-15T01:34:33Z",
+ "source_commit": "unknown",
+ "feature_dir": "lite_feats",
+ "checkpoints": {
+  "P1": "reports\\checkpoints\\P1.pt",
+  "B1": "reports\\checkpoints\\B1.pt"
+ },
+ "encoder": "microsoft/wavlm-base (frozen)",
+ "wavlm_layer": 6,
+ "dataset": "Androids corpus, interview task (lite selection)",
+ "seeds": {
+  "bootstrap": 0,
+  "window_selection": 42,
+  "training": 42
+ },
+ "splits": {
+  "train_speakers": [
+   "01_PM58_2",
+   "02_CM57_2",
+   "02_PM65_2",
+   "03_PF66_3",
+   "07_CF50_2",
+   "07_PM39_4",
+   "08_CF42_2",
+   "18_CM64_3",
+   "19_CF62_4",
+   "22_CF50_3",
+   "23_CF55_3",
+   "25_CF59_3",
+   "27_PF26_3",
+   "32_CF22_3",
+   "47_PF42_2",
+   "53_PM50_2",
+   "59_PF36_x",
+   "72_PM53_1"
+  ],
+  "eval_speakers": [
+   "10_CF51_2",
+   "26_CM31_3",
+   "27_CF63_4",
+   "37_CF69_1",
+   "54_CM48_2",
+   "69_PF48_3"
+  ],
+  "rule": "speaker-disjoint, fixed by research.lite.extract.select_windows(seed=42)"
+ },
+ "calibration_method": "leave-one-evaluation-speaker-out quantile of clean session distances",
+ "target_clean_false_alert_rate": 0.1,
+ "bootstrap_resamples": 2000,
+ "conditions": [
+  "clean",
+  "noise_mix",
+  "pause_change",
+  "noise_20dB",
+  "noise_10dB",
+  "noise_5dB",
+  "noise_0dB",
+  "delivery_change",
+  "change_plus_noise",
+  "delivery_plus_noise"
+ ],
+ "primary_comparison": {
+  "methods": [
+   "P1",
+   "B0"
+  ],
+  "level": "session",
+  "condition": "noise_10dB",
+  "operating_point": "matched",
+  "fixed_on": "2026-11-14",
+  "note": "Fixed before the matched-operating-point rerun; not changed after seeing its results."
+ }
+}

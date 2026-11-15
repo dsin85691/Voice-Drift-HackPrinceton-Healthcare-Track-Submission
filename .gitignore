@@ -12,6 +12,12 @@ feats/
 *.parquet
 androids*/
 artifacts/
+# Androids-derived features and model weights (academic, non-commercial data terms): never in the public repo
+lite_feats/
+reports/
+*.pt
+*.zip
 voice_drift.db
 demo/
 results/demo_snapshot.json
+results/sample_snapshot.json

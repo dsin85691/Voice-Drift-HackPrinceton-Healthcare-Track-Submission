@@ -18,6 +18,8 @@ def load_scenario(name: str, dm: drift.DriftModel, base_time=None) -> str:
     pid = data["patient"]["id"]
     store.purge_patient(pid)
     now = base_time or store.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+    if base_time is None and now > store.utcnow():
+        now -= timedelta(days=1)      # before 09:00 UTC "today 09:00" is in the future: never seed future check-ins
     with store.session() as s:
         from ..pipeline.run import demo_enrollment
         s.add(store.Patient(id=pid, display_name=data["patient"]["display_name"], consent_at=store.utcnow(),

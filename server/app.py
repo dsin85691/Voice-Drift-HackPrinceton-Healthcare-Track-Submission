@@ -77,6 +77,9 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             holder["rt"] = Runtime()
         cfg = get_config()
         log.info("resolved config: %s", json.dumps(cfg, default=str)[:1500])
+        if (cfg.get("demo") or {}).get("warm_on_start", True):
+            # measure the one-click demos in the background so a judge never waits on a spinner
+            threading.Thread(target=app.state.warm_all, name="demo-warm", daemon=True).start()
         yield
 
     app = FastAPI(title="Voice Drift Monitor", lifespan=lifespan)
@@ -498,7 +501,8 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         sc = d.get("sample") or {}
         sample_ok = bool(sc) and all((ROOT / f).exists() for f in [*sc.get("baseline", []), sc.get("recording", "-")])
         auto_baseline = d["profile"] == sc.get("profile") and sample_ok
-        return {"aggregate": agg, "demo_snapshot": load("demo_snapshot"), "calibration_artifacts": calib_arts,
+        return {"aggregate": agg, "demo_snapshot": load_snap("replay"), "sample_snapshot": load_snap("sample"),
+                "demo_warm": dict(warm), "calibration_artifacts": calib_arts,
                 "sample": {"present": sample_ok, "profile": sc.get("profile"), "display_name": sc.get("display_name"),
                            "synthetic_voice": True},
                 "demo": {"clip_present": clip.exists(), "profile": d["profile"],
@@ -550,53 +554,136 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 raise HTTPException(500, f"sample baseline could not be built (rejected: {bad[:2]})")
         return True
 
-    @app.post("/api/demo/sample")
-    def demo_sample():
-        """One click (VD-01): analyse the bundled sample recording through the normal check-in pipeline against the
-        sample profile's baseline (built from bundled readings on first use). Synthetic voice; labelled as such."""
-        if not sample_lock.acquire(blocking=False):
-            raise HTTPException(409, "the sample analysis is already running")
-        try:
-            sc = sample_cfg()
-            rec = ROOT / sc["recording"]
-            if not rec.exists():
-                raise HTTPException(409, f"bundled demo audio missing: {sc['recording']}")
-            built = ensure_sample_baseline()
-            cid = run_clip(sc["profile"], rec)
-            with store.session() as s:
-                ck = s.get(store.Checkin, cid)
-                res = scoring.result_json(ck)
-                if ck.status != "SAFETY":
-                    res.update(review_info(s, ck))
-            return {"checkin": res, "profile": sc["profile"], "baseline_built_now": built,
-                    "label": "Prerecorded sample: synthetic text-to-speech voice reading the standard passage, "
-                             "analysed live by the same pipeline as real check-ins."}
-        finally:
-            sample_lock.release()
+    # ---- demo cache: both demos are measured ONCE (in the background at start-up, or by tools/warm_demo.py) and
+    # served instantly. A snapshot is only ever served if its key still matches the code, model and audio files, so
+    # a stale result can never be shown; "fresh=1" re-runs live. Results are real pipeline output, labelled with
+    # when and by which model they were measured.
+    warm = {"state": "idle", "error": None, "started_at": None, "finished_at": None}
+    file_hashes: dict = {}
 
-    @app.post("/api/demo/run")
-    async def demo_run():
-        """One click: the bundled clip, analysed clean and with the configured noise interval, against the configured
-        profile's baseline. Same code path as the Replay lab. The last run is saved as a snapshot (real output)."""
+    def snap_path(kind: str) -> Path:
+        key = "sample_snapshot" if kind == "sample" else "demo_snapshot"
+        return ROOT / get_config().results.get(key, f"results/{key}.json")
+
+    def cache_key(kind: str) -> str:
+        import hashlib
+        d, sc, r = get_config().demo, sample_cfg(), rt()
+        files = [*sc.get("baseline", []), sc.get("recording", ""), d["clip"]]
+        h = hashlib.sha1()
+        for f in files:
+            p = ROOT / f
+            h.update(f.encode())
+            if p.exists():
+                st = p.stat()
+                memo = file_hashes.get(str(p))
+                if not memo or memo[0] != (st.st_size, st.st_mtime_ns):      # hash each file once per change
+                    memo = ((st.st_size, st.st_mtime_ns), hashlib.sha1(p.read_bytes()).digest())
+                    file_hashes[str(p)] = memo
+                h.update(memo[1])
+        h.update(json.dumps({"kind": kind, "encoder": r.acoustic.encoder_name, "drift": r.dm.version,
+                             "tau": round(float(r.dm.tau), 6), "git": r.git,
+                             "demo": {k: d[k] for k in ("profile", "noise", "snr_db", "start_s", "end_s", "seed")}},
+                            sort_keys=True).encode())
+        return h.hexdigest()[:16]
+
+    def load_snap(kind: str) -> dict | None:
+        p = snap_path(kind)
+        try:
+            j = json.loads(p.read_text())
+        except (OSError, ValueError):
+            return None
+        return j if j.get("cache_key") == cache_key(kind) else None      # stale -> never served
+
+    def save_snap(kind: str, out: dict, t0: float) -> dict:
+        import time as _t
+        out.update(cache_key=cache_key(kind), ran_at=store.utcnow().isoformat() + "Z",
+                   model=rt().acoustic.encoder_name, compute_seconds=round(_t.perf_counter() - t0, 1))
+        p = snap_path(kind)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(out))
+        return out
+
+    def compute_sample() -> dict:
+        import time as _t
+        t0 = _t.perf_counter()
+        sc = sample_cfg()
+        rec = ROOT / sc["recording"]
+        if not rec.exists():
+            raise HTTPException(409, f"bundled demo audio missing: {sc['recording']}")
+        built = ensure_sample_baseline()
+        cid = run_clip(sc["profile"], rec)
+        with store.session() as s:
+            ck = s.get(store.Checkin, cid)
+            res = scoring.result_json(ck)
+            if ck.status != "SAFETY":
+                res.update(review_info(s, ck))
+        return save_snap("sample", {"checkin": res, "profile": sc["profile"], "baseline_built_now": built,
+                                    "label": "Prerecorded sample: synthetic text-to-speech voice reading the standard "
+                                             "passage, analysed by the same pipeline as real check-ins."}, t0)
+
+    def compute_replay() -> dict:
         import shutil
+        import time as _t
+        t0 = _t.perf_counter()
         r, d = rt(), get_config().demo
         clip = ROOT / d["clip"]
         if not clip.exists():
             raise HTTPException(409, f"no demo clip at {d['clip']}")
-        loop = asyncio.get_running_loop()
         if d["profile"] == sample_cfg().get("profile"):
-            await loop.run_in_executor(None, ensure_sample_baseline)
+            ensure_sample_baseline()
         tmp = r.tmp / f"{store.new_id('demo')}{clip.suffix}"
         shutil.copyfile(clip, tmp)                      # replay deletes its input; never touch the bundled file
-        out = await loop.run_in_executor(None, lambda: r.replay(
-            d["profile"], tmp, kind=d["noise"], start_s=float(d["start_s"]), end_s=float(d["end_s"]),
-            snr_db=float(d["snr_db"]), seed=int(d["seed"])))
-        out["ran_at"] = store.utcnow().isoformat() + "Z"
-        out["model"] = r.acoustic.encoder_name
-        snap = ROOT / get_config().results["demo_snapshot"]
-        snap.parent.mkdir(parents=True, exist_ok=True)
-        snap.write_text(json.dumps(out))
-        return out
+        out = r.replay(d["profile"], tmp, kind=d["noise"], start_s=float(d["start_s"]), end_s=float(d["end_s"]),
+                       snr_db=float(d["snr_db"]), seed=int(d["seed"]))
+        return save_snap("replay", out, t0)
+
+    def warm_all() -> dict:
+        """Measure whatever isn't cached yet. Runs in the background at start-up; safe to call repeatedly."""
+        with sample_lock:
+            warm.update(state="running", error=None, started_at=store.utcnow().isoformat() + "Z")
+            try:
+                for kind, fn in (("sample", compute_sample), ("replay", compute_replay)):
+                    if load_snap(kind) is None:
+                        fn()
+                warm.update(state="ready", finished_at=store.utcnow().isoformat() + "Z")
+            except Exception as e:   # never take the server down; the UI says the demo is unavailable
+                log.exception("demo warm-up failed")
+                warm.update(state="error", error=getattr(e, "detail", None) or repr(e)[:200])
+        return dict(warm)
+
+    app.state.warm_all = warm_all
+
+    def serve(kind: str, fresh: bool, fn) -> dict:
+        if not fresh:
+            snap = load_snap(kind)
+            if snap is not None:
+                return {**snap, "cached": True}
+        if not sample_lock.acquire(blocking=False):
+            raise HTTPException(409, "the demo is being prepared; try again in a moment")
+        try:
+            return {**fn(), "cached": False}
+        finally:
+            sample_lock.release()
+
+    @app.post("/api/demo/sample")
+    def demo_sample(fresh: bool = False):
+        """One click (VD-01): the bundled sample analysed through the normal check-in pipeline against the sample
+        profile's baseline. Served from the measured snapshot unless fresh=1. Synthetic voice; labelled as such."""
+        return serve("sample", fresh, compute_sample)
+
+    @app.post("/api/demo/run")
+    def demo_run(fresh: bool = False):
+        """One click: the bundled clip analysed clean and with the configured noise interval, against the configured
+        profile's baseline (same code path as the Replay lab). Served from the measured snapshot unless fresh=1."""
+        return serve("replay", fresh, compute_replay)
+
+    @app.post("/api/demo/warm")
+    def demo_warm():
+        """Measure and cache both demos now (blocking). Used by tools/warm_demo.py before a presentation."""
+        out = warm_all()
+        if out["state"] == "error":
+            raise HTTPException(500, out["error"])
+        return {**out, "sample_cached": load_snap("sample") is not None, "replay_cached": load_snap("replay") is not None}
 
     @app.post("/api/demo/compare")
     def demo_compare(body: CompareBody):

@@ -290,7 +290,9 @@ def flag_json(f: store.ReviewFlag, s: Session | None = None, detail: bool = Fals
     out["review_state"] = "pending" if f.status in PENDING else "reviewed"
     if s is not None:
         ev = list(s.exec(select(store.FlagEvidence).where(store.FlagEvidence.flag_id == f.flag_id)))
-        out["supporting_checkins"] = len(ev)
+        out["supporting_checkins"] = len(ev)                       # every check-in the rule looked at (kept for API)
+        out["considered_checkins"] = len(ev)
+        out["qualifying_checkins"] = sum(1 for e in ev if e.role == "qualifying")   # the ones above the boundary
         # the most recent qualifying check-in: the score and boundary that triggered (or last supported) the review
         trig = None
         for e in ev:

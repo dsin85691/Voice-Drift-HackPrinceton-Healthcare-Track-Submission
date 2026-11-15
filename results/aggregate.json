@@ -1,27 +1,59 @@
 {
- "generated_at": "2026-11-14T20:00:10Z",
+ "generated_at": "2026-11-15T01:34:33Z",
  "illustrative": false,
+ "schema": 2,
+ "primary_comparison": {
+  "methods": [
+   "P1",
+   "B0"
+  ],
+  "level": "session",
+  "condition": "noise_10dB",
+  "operating_point": "matched",
+  "fixed_on": "2026-11-14",
+  "note": "Fixed before the matched-operating-point rerun; not changed after seeing its results."
+ },
  "headline": {
   "level": "session (3 windows, ~24 s)",
+  "operating_point": "matched",
   "projection_model": "P1",
-  "noise_condition": "added held-out noise or babble at 10 dB SNR",
+  "noise_condition": "held-out noise or babble added at 10 dB SNR",
+  "change_key": "delivery_change",
+  "change_condition": "SYNTHETIC change: 20% slower delivery, pitch unchanged (should alert)",
+  "sentence": "At an approximately matched clean-speech alert rate (17% (B0) and 11% (P1), target 10%), added noise at 10 dB triggered alerts in 86% of unchanged sessions with raw WavLM and 19% with the projection; synthetic pauses were detected in 100% versus 53% and 20% slower delivery in 17% versus 11% (about the same rate as on unchanged speech, so neither model detects it).",
   "false_alert_raw": {
-   "rate": 0.9444,
+   "rate": 0.8611,
    "ci": [
-    0.8889,
+    0.6944,
     1.0
    ],
    "n": 36
   },
   "false_alert_projection": {
-   "rate": 0.6111,
+   "rate": 0.1944,
    "ci": [
-    0.3056,
-    0.8611
+    0.0556,
+    0.3889
    ],
    "n": 36
   },
   "change_sensitivity_raw": {
+   "rate": 0.1667,
+   "ci": [
+    0.0278,
+    0.3889
+   ],
+   "n": 36
+  },
+  "change_sensitivity_projection": {
+   "rate": 0.1111,
+   "ci": [
+    0.0278,
+    0.2222
+   ],
+   "n": 36
+  },
+  "pause_sensitivity_raw": {
    "rate": 1.0,
    "ci": [
     1.0,
@@ -29,11 +61,11 @@
    ],
    "n": 36
   },
-  "change_sensitivity_projection": {
-   "rate": 0.8333,
+  "pause_sensitivity_projection": {
+   "rate": 0.5278,
    "ci": [
-    0.5556,
-    1.0
+    0.2778,
+    0.7778
    ],
    "n": 36
   },
@@ -46,134 +78,2076 @@
    "n": 36
   },
   "clean_false_alert_projection": {
-   "rate": 0.3056,
+   "rate": 0.1111,
    "ci": [
-    0.1111,
-    0.5
+    0.0278,
+    0.2222
    ],
    "n": 36
+  },
+  "primary_difference": {
+   "diff": -0.6667,
+   "ci": [
+    -0.8611,
+    -0.4722
+   ],
+   "excludes_zero": true
+  },
+  "change_difference": {
+   "diff": -0.0556,
+   "ci": [
+    -0.1667,
+    0.0
+   ],
+   "excludes_zero": false
+  },
+  "auc_raw": {
+   "value": 0.0787,
+   "ci": [
+    0.0255,
+    0.1304
+   ],
+   "n_changed": 36,
+   "n_noise_only": 36
+  },
+  "auc_projection": {
+   "value": 0.3503,
+   "ci": [
+    0.267,
+    0.3997
+   ],
+   "n_changed": 36,
+   "n_noise_only": 36
+  }
+ },
+ "matched_operating_point": {
+  "procedure": "Per evaluation speaker, the boundary is the 90th percentile of the OTHER evaluation speakers' clean session distances (leave-one-speaker-out), computed separately for each model.",
+  "target_clean_rate": 0.1,
+  "tolerance": 0.05,
+  "by_method": {
+   "B0": {
+    "session": {
+     "boundary_by_speaker": {
+      "10_CF51_2": 0.11273,
+      "26_CM31_3": 0.09759,
+      "27_CF63_4": 0.09759,
+      "37_CF69_1": 0.07975,
+      "54_CM48_2": 0.11273,
+      "69_PF48_3": 0.11273
+     },
+     "boundary_mean": 0.10219,
+     "clean_alert_rate": {
+      "rate": 0.1667,
+      "ci": [
+       0.0278,
+       0.3889
+      ],
+      "n": 36
+     },
+     "within_tolerance": false
+    },
+    "window": {
+     "boundary_by_speaker": {
+      "10_CF51_2": 0.20372,
+      "26_CM31_3": 0.19989,
+      "27_CF63_4": 0.19989,
+      "37_CF69_1": 0.19949,
+      "54_CM48_2": 0.20156,
+      "69_PF48_3": 0.20991
+     },
+     "boundary_mean": 0.20241,
+     "clean_alert_rate": {
+      "rate": 0.1204,
+      "ci": [
+       0.0556,
+       0.1759
+      ],
+      "n": 108
+     },
+     "within_tolerance": true
+    }
+   },
+   "P1": {
+    "session": {
+     "boundary_by_speaker": {
+      "10_CF51_2": 0.4008,
+      "26_CM31_3": 0.31431,
+      "27_CF63_4": 0.31431,
+      "37_CF69_1": 0.28951,
+      "54_CM48_2": 0.4008,
+      "69_PF48_3": 0.4008
+     },
+     "boundary_mean": 0.35342,
+     "clean_alert_rate": {
+      "rate": 0.1111,
+      "ci": [
+       0.0278,
+       0.2222
+      ],
+      "n": 36
+     },
+     "within_tolerance": true
+    },
+    "window": {
+     "boundary_by_speaker": {
+      "10_CF51_2": 0.5679,
+      "26_CM31_3": 0.5679,
+      "27_CF63_4": 0.56558,
+      "37_CF69_1": 0.50977,
+      "54_CM48_2": 0.57614,
+      "69_PF48_3": 0.56558
+     },
+     "boundary_mean": 0.55881,
+     "clean_alert_rate": {
+      "rate": 0.1111,
+      "ci": [
+       0.037,
+       0.213
+      ],
+      "n": 108
+     },
+     "within_tolerance": true
+    }
+   },
+   "B1": {
+    "session": {
+     "boundary_by_speaker": {
+      "10_CF51_2": 0.45181,
+      "26_CM31_3": 0.42374,
+      "27_CF63_4": 0.42374,
+      "37_CF69_1": 0.41936,
+      "54_CM48_2": 0.45181,
+      "69_PF48_3": 0.44592
+     },
+     "boundary_mean": 0.43607,
+     "clean_alert_rate": {
+      "rate": 0.1111,
+      "ci": [
+       0.0278,
+       0.2222
+      ],
+      "n": 36
+     },
+     "within_tolerance": true
+    },
+    "window": {
+     "boundary_by_speaker": {
+      "10_CF51_2": 0.69074,
+      "26_CM31_3": 0.68217,
+      "27_CF63_4": 0.68217,
+      "37_CF69_1": 0.65591,
+      "54_CM48_2": 0.73029,
+      "69_PF48_3": 0.69074
+     },
+     "boundary_mean": 0.68867,
+     "clean_alert_rate": {
+      "rate": 0.0926,
+      "ci": [
+       0.037,
+       0.1484
+      ],
+      "n": 108
+     },
+     "within_tolerance": true
+    }
+   }
+  }
+ },
+ "train_boundary": {
+  "procedure": "90th percentile of training speakers' clean distances (original rule).",
+  "by_method": {
+   "B0": {
+    "session": {
+     "boundary": 0.0852,
+     "clean_alert_rate": {
+      "rate": 0.1667,
+      "ci": [
+       0.0278,
+       0.3889
+      ],
+      "n": 36
+     }
+    },
+    "window": {
+     "boundary": 0.18011,
+     "clean_alert_rate": {
+      "rate": 0.2037,
+      "ci": [
+       0.1296,
+       0.2778
+      ],
+      "n": 108
+     }
+    }
+   },
+   "P1": {
+    "session": {
+     "boundary": 0.20653,
+     "clean_alert_rate": {
+      "rate": 0.3056,
+      "ci": [
+       0.1111,
+       0.5
+      ],
+      "n": 36
+     }
+    },
+    "window": {
+     "boundary": 0.37378,
+     "clean_alert_rate": {
+      "rate": 0.3426,
+      "ci": [
+       0.2685,
+       0.4074
+      ],
+      "n": 108
+     }
+    }
+   },
+   "B1": {
+    "session": {
+     "boundary": 0.33227,
+     "clean_alert_rate": {
+      "rate": 0.25,
+      "ci": [
+       0.1111,
+       0.4167
+      ],
+      "n": 36
+     }
+    },
+    "window": {
+     "boundary": 0.54911,
+     "clean_alert_rate": {
+      "rate": 0.2685,
+      "ci": [
+       0.1944,
+       0.3333
+      ],
+      "n": 108
+     }
+    }
+   }
   }
  },
  "results": {
   "session": {
-   "B0": {
+   "matched": {
+    "B0": {
+     "clean": {
+      "rate": 0.1667,
+      "ci": [
+       0.0278,
+       0.3889
+      ],
+      "n": 36
+     },
+     "noise_mix": {
+      "rate": 0.5833,
+      "ci": [
+       0.3889,
+       0.7222
+      ],
+      "n": 36
+     },
+     "pause_change": {
+      "rate": 1.0,
+      "ci": [
+       1.0,
+       1.0
+      ],
+      "n": 36
+     },
+     "noise_20dB": {
+      "rate": 0.3333,
+      "ci": [
+       0.1667,
+       0.5
+      ],
+      "n": 36
+     },
+     "noise_10dB": {
+      "rate": 0.8611,
+      "ci": [
+       0.6944,
+       1.0
+      ],
+      "n": 36
+     },
+     "noise_5dB": {
+      "rate": 1.0,
+      "ci": [
+       1.0,
+       1.0
+      ],
+      "n": 36
+     },
+     "noise_0dB": {
+      "rate": 1.0,
+      "ci": [
+       1.0,
+       1.0
+      ],
+      "n": 36
+     },
+     "delivery_change": {
+      "rate": 0.1667,
+      "ci": [
+       0.0278,
+       0.3889
+      ],
+      "n": 36
+     },
+     "change_plus_noise": {
+      "rate": 1.0,
+      "ci": [
+       1.0,
+       1.0
+      ],
+      "n": 36
+     },
+     "delivery_plus_noise": {
+      "rate": 0.9167,
+      "ci": [
+       0.8056,
+       1.0
+      ],
+      "n": 36
+     }
+    },
+    "P1": {
+     "clean": {
+      "rate": 0.1111,
+      "ci": [
+       0.0278,
+       0.2222
+      ],
+      "n": 36
+     },
+     "noise_mix": {
+      "rate": 0.1111,
+      "ci": [
+       0.0278,
+       0.2222
+      ],
+      "n": 36
+     },
+     "pause_change": {
+      "rate": 0.5278,
+      "ci": [
+       0.2778,
+       0.7778
+      ],
+      "n": 36
+     },
+     "noise_20dB": {
+      "rate": 0.1111,
+      "ci": [
+       0.0278,
+       0.2222
+      ],
+      "n": 36
+     },
+     "noise_10dB": {
+      "rate": 0.1944,
+      "ci": [
+       0.0556,
+       0.3889
+      ],
+      "n": 36
+     },
+     "noise_5dB": {
+      "rate": 0.4444,
+      "ci": [
+       0.25,
+       0.6111
+      ],
+      "n": 36
+     },
+     "noise_0dB": {
+      "rate": 0.5833,
+      "ci": [
+       0.3333,
+       0.7778
+      ],
+      "n": 36
+     },
+     "delivery_change": {
+      "rate": 0.1111,
+      "ci": [
+       0.0278,
+       0.2222
+      ],
+      "n": 36
+     },
+     "change_plus_noise": {
+      "rate": 0.6389,
+      "ci": [
+       0.3333,
+       0.9167
+      ],
+      "n": 36
+     },
+     "delivery_plus_noise": {
+      "rate": 0.1667,
+      "ci": [
+       0.0278,
+       0.3889
+      ],
+      "n": 36
+     }
+    },
+    "B1": {
+     "clean": {
+      "rate": 0.1111,
+      "ci": [
+       0.0278,
+       0.2222
+      ],
+      "n": 36
+     },
+     "noise_mix": {
+      "rate": 0.1667,
+      "ci": [
+       0.0556,
+       0.2778
+      ],
+      "n": 36
+     },
+     "pause_change": {
+      "rate": 0.6667,
+      "ci": [
+       0.3333,
+       0.9167
+      ],
+      "n": 36
+     },
+     "noise_20dB": {
+      "rate": 0.25,
+      "ci": [
+       0.1111,
+       0.4167
+      ],
+      "n": 36
+     },
+     "noise_10dB": {
+      "rate": 0.3333,
+      "ci": [
+       0.1667,
+       0.5278
+      ],
+      "n": 36
+     },
+     "noise_5dB": {
+      "rate": 0.6667,
+      "ci": [
+       0.3889,
+       0.9167
+      ],
+      "n": 36
+     },
+     "noise_0dB": {
+      "rate": 0.6111,
+      "ci": [
+       0.3611,
+       0.8333
+      ],
+      "n": 36
+     },
+     "delivery_change": {
+      "rate": 0.1389,
+      "ci": [
+       0.0556,
+       0.2222
+      ],
+      "n": 36
+     },
+     "change_plus_noise": {
+      "rate": 0.7222,
+      "ci": [
+       0.3889,
+       1.0
+      ],
+      "n": 36
+     },
+     "delivery_plus_noise": {
+      "rate": 0.2778,
+      "ci": [
+       0.1389,
+       0.4167
+      ],
+      "n": 36
+     }
+    }
+   },
+   "train_boundary": {
+    "B0": {
+     "clean": {
+      "rate": 0.1667,
+      "ci": [
+       0.0278,
+       0.3889
+      ],
+      "n": 36
+     },
+     "noise_mix": {
+      "rate": 0.7222,
+      "ci": [
+       0.5556,
+       0.8333
+      ],
+      "n": 36
+     },
+     "pause_change": {
+      "rate": 1.0,
+      "ci": [
+       1.0,
+       1.0
+      ],
+      "n": 36
+     },
+     "noise_20dB": {
+      "rate": 0.6667,
+      "ci": [
+       0.5556,
+       0.8056
+      ],
+      "n": 36
+     },
+     "noise_10dB": {
+      "rate": 0.9444,
+      "ci": [
+       0.8889,
+       1.0
+      ],
+      "n": 36
+     },
+     "noise_5dB": {
+      "rate": 1.0,
+      "ci": [
+       1.0,
+       1.0
+      ],
+      "n": 36
+     },
+     "noise_0dB": {
+      "rate": 1.0,
+      "ci": [
+       1.0,
+       1.0
+      ],
+      "n": 36
+     },
+     "delivery_change": {
+      "rate": 0.25,
+      "ci": [
+       0.1389,
+       0.3889
+      ],
+      "n": 36
+     },
+     "change_plus_noise": {
+      "rate": 1.0,
+      "ci": [
+       1.0,
+       1.0
+      ],
+      "n": 36
+     },
+     "delivery_plus_noise": {
+      "rate": 0.9722,
+      "ci": [
+       0.9167,
+       1.0
+      ],
+      "n": 36
+     }
+    },
+    "P1": {
+     "clean": {
+      "rate": 0.3056,
+      "ci": [
+       0.1111,
+       0.5
+      ],
+      "n": 36
+     },
+     "noise_mix": {
+      "rate": 0.4722,
+      "ci": [
+       0.2778,
+       0.6674
+      ],
+      "n": 36
+     },
+     "pause_change": {
+      "rate": 0.8333,
+      "ci": [
+       0.5556,
+       1.0
+      ],
+      "n": 36
+     },
+     "noise_20dB": {
+      "rate": 0.5278,
+      "ci": [
+       0.3333,
+       0.75
+      ],
+      "n": 36
+     },
+     "noise_10dB": {
+      "rate": 0.6111,
+      "ci": [
+       0.3333,
+       0.8611
+      ],
+      "n": 36
+     },
+     "noise_5dB": {
+      "rate": 0.75,
+      "ci": [
+       0.4444,
+       0.9444
+      ],
+      "n": 36
+     },
+     "noise_0dB": {
+      "rate": 0.8611,
+      "ci": [
+       0.7222,
+       0.9722
+      ],
+      "n": 36
+     },
+     "delivery_change": {
+      "rate": 0.4722,
+      "ci": [
+       0.25,
+       0.6667
+      ],
+      "n": 36
+     },
+     "change_plus_noise": {
+      "rate": 0.9167,
+      "ci": [
+       0.75,
+       1.0
+      ],
+      "n": 36
+     },
+     "delivery_plus_noise": {
+      "rate": 0.5278,
+      "ci": [
+       0.3333,
+       0.7222
+      ],
+      "n": 36
+     }
+    },
+    "B1": {
+     "clean": {
+      "rate": 0.25,
+      "ci": [
+       0.1111,
+       0.4167
+      ],
+      "n": 36
+     },
+     "noise_mix": {
+      "rate": 0.3333,
+      "ci": [
+       0.1944,
+       0.5
+      ],
+      "n": 36
+     },
+     "pause_change": {
+      "rate": 0.8333,
+      "ci": [
+       0.5556,
+       1.0
+      ],
+      "n": 36
+     },
+     "noise_20dB": {
+      "rate": 0.3889,
+      "ci": [
+       0.1389,
+       0.6667
+      ],
+      "n": 36
+     },
+     "noise_10dB": {
+      "rate": 0.5833,
+      "ci": [
+       0.3611,
+       0.8056
+      ],
+      "n": 36
+     },
+     "noise_5dB": {
+      "rate": 0.7778,
+      "ci": [
+       0.6389,
+       0.9167
+      ],
+      "n": 36
+     },
+     "noise_0dB": {
+      "rate": 0.9444,
+      "ci": [
+       0.8333,
+       1.0
+      ],
+      "n": 36
+     },
+     "delivery_change": {
+      "rate": 0.3333,
+      "ci": [
+       0.1667,
+       0.5
+      ],
+      "n": 36
+     },
+     "change_plus_noise": {
+      "rate": 0.9444,
+      "ci": [
+       0.8333,
+       1.0
+      ],
+      "n": 36
+     },
+     "delivery_plus_noise": {
+      "rate": 0.5278,
+      "ci": [
+       0.3333,
+       0.7222
+      ],
+      "n": 36
+     }
+    }
+   }
+  },
+  "window": {
+   "matched": {
+    "B0": {
+     "clean": {
+      "rate": 0.1204,
+      "ci": [
+       0.0556,
+       0.1759
+      ],
+      "n": 108
+     },
+     "noise_mix": {
+      "rate": 0.537,
+      "ci": [
+       0.3701,
+       0.6947
+      ],
+      "n": 108
+     },
+     "pause_change": {
+      "rate": 0.9074,
+      "ci": [
+       0.8519,
+       0.9537
+      ],
+      "n": 108
+     },
+     "noise_20dB": {
+      "rate": 0.2407,
+      "ci": [
+       0.1852,
+       0.2873
+      ],
+      "n": 108
+     },
+     "noise_10dB": {
+      "rate": 0.6944,
+      "ci": [
+       0.537,
+       0.8148
+      ],
+      "n": 108
+     },
+     "noise_5dB": {
+      "rate": 0.8889,
+      "ci": [
+       0.8333,
+       0.9444
+      ],
+      "n": 108
+     },
+     "noise_0dB": {
+      "rate": 0.9259,
+      "ci": [
+       0.9074,
+       0.9444
+      ],
+      "n": 108
+     },
+     "delivery_change": {
+      "rate": 0.1204,
+      "ci": [
+       0.0556,
+       0.1852
+      ],
+      "n": 108
+     },
+     "change_plus_noise": {
+      "rate": 0.9907,
+      "ci": [
+       0.9722,
+       1.0
+      ],
+      "n": 108
+     },
+     "delivery_plus_noise": {
+      "rate": 0.7593,
+      "ci": [
+       0.6389,
+       0.8519
+      ],
+      "n": 108
+     }
+    },
+    "P1": {
+     "clean": {
+      "rate": 0.1111,
+      "ci": [
+       0.037,
+       0.213
+      ],
+      "n": 108
+     },
+     "noise_mix": {
+      "rate": 0.1204,
+      "ci": [
+       0.0648,
+       0.1944
+      ],
+      "n": 108
+     },
+     "pause_change": {
+      "rate": 0.1481,
+      "ci": [
+       0.0185,
+       0.3148
+      ],
+      "n": 108
+     },
+     "noise_20dB": {
+      "rate": 0.1481,
+      "ci": [
+       0.0833,
+       0.213
+      ],
+      "n": 108
+     },
+     "noise_10dB": {
+      "rate": 0.213,
+      "ci": [
+       0.1204,
+       0.3148
+      ],
+      "n": 108
+     },
+     "noise_5dB": {
+      "rate": 0.2037,
+      "ci": [
+       0.0741,
+       0.3148
+      ],
+      "n": 108
+     },
+     "noise_0dB": {
+      "rate": 0.2593,
+      "ci": [
+       0.1296,
+       0.3981
+      ],
+      "n": 108
+     },
+     "delivery_change": {
+      "rate": 0.1111,
+      "ci": [
+       0.0278,
+       0.213
+      ],
+      "n": 108
+     },
+     "change_plus_noise": {
+      "rate": 0.25,
+      "ci": [
+       0.0741,
+       0.4537
+      ],
+      "n": 108
+     },
+     "delivery_plus_noise": {
+      "rate": 0.1574,
+      "ci": [
+       0.037,
+       0.2963
+      ],
+      "n": 108
+     }
+    },
+    "B1": {
+     "clean": {
+      "rate": 0.0926,
+      "ci": [
+       0.037,
+       0.1484
+      ],
+      "n": 108
+     },
+     "noise_mix": {
+      "rate": 0.0926,
+      "ci": [
+       0.0278,
+       0.1667
+      ],
+      "n": 108
+     },
+     "pause_change": {
+      "rate": 0.1574,
+      "ci": [
+       0.0185,
+       0.3056
+      ],
+      "n": 108
+     },
+     "noise_20dB": {
+      "rate": 0.1759,
+      "ci": [
+       0.1111,
+       0.2407
+      ],
+      "n": 108
+     },
+     "noise_10dB": {
+      "rate": 0.2315,
+      "ci": [
+       0.1481,
+       0.3241
+      ],
+      "n": 108
+     },
+     "noise_5dB": {
+      "rate": 0.3889,
+      "ci": [
+       0.2685,
+       0.4907
+      ],
+      "n": 108
+     },
+     "noise_0dB": {
+      "rate": 0.4444,
+      "ci": [
+       0.2778,
+       0.5648
+      ],
+      "n": 108
+     },
+     "delivery_change": {
+      "rate": 0.0926,
+      "ci": [
+       0.0278,
+       0.1759
+      ],
+      "n": 108
+     },
+     "change_plus_noise": {
+      "rate": 0.3519,
+      "ci": [
+       0.1852,
+       0.5093
+      ],
+      "n": 108
+     },
+     "delivery_plus_noise": {
+      "rate": 0.2037,
+      "ci": [
+       0.0926,
+       0.3333
+      ],
+      "n": 108
+     }
+    }
+   },
+   "train_boundary": {
+    "B0": {
+     "clean": {
+      "rate": 0.2037,
+      "ci": [
+       0.1296,
+       0.2778
+      ],
+      "n": 108
+     },
+     "noise_mix": {
+      "rate": 0.6111,
+      "ci": [
+       0.4352,
+       0.7685
+      ],
+      "n": 108
+     },
+     "pause_change": {
+      "rate": 0.9815,
+      "ci": [
+       0.9444,
+       1.0
+      ],
+      "n": 108
+     },
+     "noise_20dB": {
+      "rate": 0.4167,
+      "ci": [
+       0.3056,
+       0.5185
+      ],
+      "n": 108
+     },
+     "noise_10dB": {
+      "rate": 0.787,
+      "ci": [
+       0.6296,
+       0.9074
+      ],
+      "n": 108
+     },
+     "noise_5dB": {
+      "rate": 0.9167,
+      "ci": [
+       0.8704,
+       0.963
+      ],
+      "n": 108
+     },
+     "noise_0dB": {
+      "rate": 0.9537,
+      "ci": [
+       0.9444,
+       0.9722
+      ],
+      "n": 108
+     },
+     "delivery_change": {
+      "rate": 0.1944,
+      "ci": [
+       0.1111,
+       0.2778
+      ],
+      "n": 108
+     },
+     "change_plus_noise": {
+      "rate": 1.0,
+      "ci": [
+       1.0,
+       1.0
+      ],
+      "n": 108
+     },
+     "delivery_plus_noise": {
+      "rate": 0.8056,
+      "ci": [
+       0.6944,
+       0.8981
+      ],
+      "n": 108
+     }
+    },
+    "P1": {
+     "clean": {
+      "rate": 0.3426,
+      "ci": [
+       0.2685,
+       0.4074
+      ],
+      "n": 108
+     },
+     "noise_mix": {
+      "rate": 0.4444,
+      "ci": [
+       0.3426,
+       0.5463
+      ],
+      "n": 108
+     },
+     "pause_change": {
+      "rate": 0.5741,
+      "ci": [
+       0.2685,
+       0.8519
+      ],
+      "n": 108
+     },
+     "noise_20dB": {
+      "rate": 0.3889,
+      "ci": [
+       0.25,
+       0.5
+      ],
+      "n": 108
+     },
+     "noise_10dB": {
+      "rate": 0.4722,
+      "ci": [
+       0.3241,
+       0.6111
+      ],
+      "n": 108
+     },
+     "noise_5dB": {
+      "rate": 0.6852,
+      "ci": [
+       0.4722,
+       0.8241
+      ],
+      "n": 108
+     },
+     "noise_0dB": {
+      "rate": 0.713,
+      "ci": [
+       0.5093,
+       0.8796
+      ],
+      "n": 108
+     },
+     "delivery_change": {
+      "rate": 0.3241,
+      "ci": [
+       0.2593,
+       0.3889
+      ],
+      "n": 108
+     },
+     "change_plus_noise": {
+      "rate": 0.6852,
+      "ci": [
+       0.3981,
+       0.9259
+      ],
+      "n": 108
+     },
+     "delivery_plus_noise": {
+      "rate": 0.4815,
+      "ci": [
+       0.3426,
+       0.6204
+      ],
+      "n": 108
+     }
+    },
+    "B1": {
+     "clean": {
+      "rate": 0.2685,
+      "ci": [
+       0.1944,
+       0.3333
+      ],
+      "n": 108
+     },
+     "noise_mix": {
+      "rate": 0.2778,
+      "ci": [
+       0.213,
+       0.3519
+      ],
+      "n": 108
+     },
+     "pause_change": {
+      "rate": 0.463,
+      "ci": [
+       0.2222,
+       0.713
+      ],
+      "n": 108
+     },
+     "noise_20dB": {
+      "rate": 0.3611,
+      "ci": [
+       0.25,
+       0.4722
+      ],
+      "n": 108
+     },
+     "noise_10dB": {
+      "rate": 0.463,
+      "ci": [
+       0.3056,
+       0.5926
+      ],
+      "n": 108
+     },
+     "noise_5dB": {
+      "rate": 0.6667,
+      "ci": [
+       0.4813,
+       0.8148
+      ],
+      "n": 108
+     },
+     "noise_0dB": {
+      "rate": 0.7037,
+      "ci": [
+       0.5185,
+       0.8519
+      ],
+      "n": 108
+     },
+     "delivery_change": {
+      "rate": 0.3148,
+      "ci": [
+       0.2315,
+       0.3981
+      ],
+      "n": 108
+     },
+     "change_plus_noise": {
+      "rate": 0.6111,
+      "ci": [
+       0.3609,
+       0.8333
+      ],
+      "n": 108
+     },
+     "delivery_plus_noise": {
+      "rate": 0.4259,
+      "ci": [
+       0.2778,
+       0.5648
+      ],
+      "n": 108
+     }
+    }
+   }
+  }
+ },
+ "auc": {
+  "B0": {
+   "pause_change": {
+    "value": 0.8488,
+    "ci": [
+     0.7431,
+     0.912
+    ],
+    "n_changed": 36,
+    "n_noise_only": 36
+   },
+   "delivery_change": {
+    "value": 0.0787,
+    "ci": [
+     0.0255,
+     0.1304
+    ],
+    "n_changed": 36,
+    "n_noise_only": 36
+   }
+  },
+  "P1": {
+   "pause_change": {
+    "value": 0.716,
+    "ci": [
+     0.5625,
+     0.8966
+    ],
+    "n_changed": 36,
+    "n_noise_only": 36
+   },
+   "delivery_change": {
+    "value": 0.3503,
+    "ci": [
+     0.267,
+     0.3997
+    ],
+    "n_changed": 36,
+    "n_noise_only": 36
+   }
+  },
+  "B1": {
+   "pause_change": {
+    "value": 0.679,
+    "ci": [
+     0.5239,
+     0.8233
+    ],
+    "n_changed": 36,
+    "n_noise_only": 36
+   },
+   "delivery_change": {
+    "value": 0.3156,
+    "ci": [
+     0.2338,
+     0.3588
+    ],
+    "n_changed": 36,
+    "n_noise_only": 36
+   }
+  }
+ },
+ "paired_differences": {
+  "P1-B0": {
+   "rate": {
+    "change_plus_noise": {
+     "diff": -0.3611,
+     "ci": [
+      -0.6667,
+      -0.0833
+     ],
+     "excludes_zero": true
+    },
     "clean": {
-     "rate": 0.1667,
+     "diff": -0.0556,
      "ci": [
-      0.0278,
-      0.3889
+      -0.1667,
+      0.0
      ],
-     "n": 36
+     "excludes_zero": false
     },
-    "noise_mix": {
-     "rate": 0.7222,
+    "delivery_change": {
+     "diff": -0.0556,
      "ci": [
-      0.5556,
-      0.8333
+      -0.1667,
+      0.0
      ],
-     "n": 36
+     "excludes_zero": false
     },
-    "pause_change": {
-     "rate": 1.0,
+    "delivery_plus_noise": {
+     "diff": -0.75,
      "ci": [
-      1.0,
-      1.0
+      -0.9167,
+      -0.5556
      ],
-     "n": 36
-    },
-    "noise_20dB": {
-     "rate": 0.6667,
-     "ci": [
-      0.5556,
-      0.8056
-     ],
-     "n": 36
-    },
-    "noise_10dB": {
-     "rate": 0.9444,
-     "ci": [
-      0.8889,
-      1.0
-     ],
-     "n": 36
-    },
-    "noise_5dB": {
-     "rate": 1.0,
-     "ci": [
-      1.0,
-      1.0
-     ],
-     "n": 36
+     "excludes_zero": true
     },
     "noise_0dB": {
-     "rate": 1.0,
+     "diff": -0.4167,
      "ci": [
-      1.0,
-      1.0
+      -0.6667,
+      -0.2222
      ],
-     "n": 36
+     "excludes_zero": true
+    },
+    "noise_10dB": {
+     "diff": -0.6667,
+     "ci": [
+      -0.8611,
+      -0.4722
+     ],
+     "excludes_zero": true
+    },
+    "noise_20dB": {
+     "diff": -0.2222,
+     "ci": [
+      -0.3056,
+      -0.1111
+     ],
+     "excludes_zero": true
+    },
+    "noise_5dB": {
+     "diff": -0.5556,
+     "ci": [
+      -0.75,
+      -0.3889
+     ],
+     "excludes_zero": true
+    },
+    "noise_mix": {
+     "diff": -0.4722,
+     "ci": [
+      -0.6111,
+      -0.3333
+     ],
+     "excludes_zero": true
+    },
+    "pause_change": {
+     "diff": -0.4722,
+     "ci": [
+      -0.7222,
+      -0.2222
+     ],
+     "excludes_zero": true
+    }
+   },
+   "auc": {
+    "pause_change": {
+     "diff": -0.1327,
+     "ci": [
+      -0.2902,
+      0.0681
+     ],
+     "excludes_zero": false
+    },
+    "delivery_change": {
+     "diff": 0.2716,
+     "ci": [
+      0.2068,
+      0.3395
+     ],
+     "excludes_zero": true
+    }
+   }
+  },
+  "P1-B1": {
+   "rate": {
+    "change_plus_noise": {
+     "diff": -0.0833,
+     "ci": [
+      -0.1944,
+      0.0
+     ],
+     "excludes_zero": false
+    },
+    "clean": {
+     "diff": 0.0,
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "excludes_zero": false
+    },
+    "delivery_change": {
+     "diff": -0.0278,
+     "ci": [
+      -0.0833,
+      0.0
+     ],
+     "excludes_zero": false
+    },
+    "delivery_plus_noise": {
+     "diff": -0.1111,
+     "ci": [
+      -0.3056,
+      0.0556
+     ],
+     "excludes_zero": false
+    },
+    "noise_0dB": {
+     "diff": -0.0278,
+     "ci": [
+      -0.1667,
+      0.1111
+     ],
+     "excludes_zero": false
+    },
+    "noise_10dB": {
+     "diff": -0.1389,
+     "ci": [
+      -0.3056,
+      0.0
+     ],
+     "excludes_zero": false
+    },
+    "noise_20dB": {
+     "diff": -0.1389,
+     "ci": [
+      -0.3611,
+      0.0
+     ],
+     "excludes_zero": false
+    },
+    "noise_5dB": {
+     "diff": -0.2222,
+     "ci": [
+      -0.4444,
+      -0.0556
+     ],
+     "excludes_zero": true
+    },
+    "noise_mix": {
+     "diff": -0.0556,
+     "ci": [
+      -0.1667,
+      0.0
+     ],
+     "excludes_zero": false
+    },
+    "pause_change": {
+     "diff": -0.1389,
+     "ci": [
+      -0.3056,
+      0.0278
+     ],
+     "excludes_zero": false
+    }
+   },
+   "auc": {
+    "pause_change": {
+     "diff": 0.037,
+     "ci": [
+      -0.0239,
+      0.1034
+     ],
+     "excludes_zero": false
+    },
+    "delivery_change": {
+     "diff": 0.0347,
+     "ci": [
+      -0.0286,
+      0.1227
+     ],
+     "excludes_zero": false
+    }
+   }
+  },
+  "B1-B0": {
+   "rate": {
+    "change_plus_noise": {
+     "diff": -0.2778,
+     "ci": [
+      -0.6111,
+      0.0
+     ],
+     "excludes_zero": false
+    },
+    "clean": {
+     "diff": -0.0556,
+     "ci": [
+      -0.1667,
+      0.0
+     ],
+     "excludes_zero": false
+    },
+    "delivery_change": {
+     "diff": -0.0278,
+     "ci": [
+      -0.1667,
+      0.0833
+     ],
+     "excludes_zero": false
+    },
+    "delivery_plus_noise": {
+     "diff": -0.6389,
+     "ci": [
+      -0.8333,
+      -0.4438
+     ],
+     "excludes_zero": true
+    },
+    "noise_0dB": {
+     "diff": -0.3889,
+     "ci": [
+      -0.6389,
+      -0.1667
+     ],
+     "excludes_zero": true
+    },
+    "noise_10dB": {
+     "diff": -0.5278,
+     "ci": [
+      -0.7778,
+      -0.3056
+     ],
+     "excludes_zero": true
+    },
+    "noise_20dB": {
+     "diff": -0.0833,
+     "ci": [
+      -0.2778,
+      0.2222
+     ],
+     "excludes_zero": false
+    },
+    "noise_5dB": {
+     "diff": -0.3333,
+     "ci": [
+      -0.6111,
+      -0.0833
+     ],
+     "excludes_zero": true
+    },
+    "noise_mix": {
+     "diff": -0.4167,
+     "ci": [
+      -0.6111,
+      -0.1667
+     ],
+     "excludes_zero": true
+    },
+    "pause_change": {
+     "diff": -0.3333,
+     "ci": [
+      -0.6667,
+      -0.0833
+     ],
+     "excludes_zero": true
+    }
+   },
+   "auc": {
+    "pause_change": {
+     "diff": -0.1698,
+     "ci": [
+      -0.3148,
+      -0.017
+     ],
+     "excludes_zero": true
+    },
+    "delivery_change": {
+     "diff": 0.2369,
+     "ci": [
+      0.179,
+      0.2623
+     ],
+     "excludes_zero": true
+    }
+   }
+  }
+ },
+ "window_level": {
+  "auc": {
+   "B0": {
+    "pause_change": {
+     "value": 0.6777,
+     "ci": [
+      0.5405,
+      0.7832
+     ],
+     "n_changed": 108,
+     "n_noise_only": 108
+    },
+    "delivery_change": {
+     "value": 0.1097,
+     "ci": [
+      0.0682,
+      0.1325
+     ],
+     "n_changed": 108,
+     "n_noise_only": 108
     }
    },
    "P1": {
-    "clean": {
-     "rate": 0.3056,
+    "pause_change": {
+     "value": 0.5273,
      "ci": [
-      0.1111,
+      0.3731,
+      0.6853
+     ],
+     "n_changed": 108,
+     "n_noise_only": 108
+    },
+    "delivery_change": {
+     "value": 0.3909,
+     "ci": [
+      0.329,
+      0.4378
+     ],
+     "n_changed": 108,
+     "n_noise_only": 108
+    }
+   },
+   "B1": {
+    "pause_change": {
+     "value": 0.4847,
+     "ci": [
+      0.3398,
+      0.6086
+     ],
+     "n_changed": 108,
+     "n_noise_only": 108
+    },
+    "delivery_change": {
+     "value": 0.3617,
+     "ci": [
+      0.3194,
+      0.3981
+     ],
+     "n_changed": 108,
+     "n_noise_only": 108
+    }
+   }
+  },
+  "paired_differences": {
+   "P1-B0": {
+    "rate": {
+     "change_plus_noise": {
+      "diff": -0.7407,
+      "ci": [
+       -0.9074,
+       -0.5463
+      ],
+      "excludes_zero": true
+     },
+     "clean": {
+      "diff": -0.0093,
+      "ci": [
+       -0.0741,
+       0.0648
+      ],
+      "excludes_zero": false
+     },
+     "delivery_change": {
+      "diff": -0.0093,
+      "ci": [
+       -0.0836,
+       0.0833
+      ],
+      "excludes_zero": false
+     },
+     "delivery_plus_noise": {
+      "diff": -0.6019,
+      "ci": [
+       -0.7037,
+       -0.5
+      ],
+      "excludes_zero": true
+     },
+     "noise_0dB": {
+      "diff": -0.6667,
+      "ci": [
+       -0.787,
+       -0.5463
+      ],
+      "excludes_zero": true
+     },
+     "noise_10dB": {
+      "diff": -0.4815,
+      "ci": [
+       -0.6204,
+       -0.3519
+      ],
+      "excludes_zero": true
+     },
+     "noise_20dB": {
+      "diff": -0.0926,
+      "ci": [
+       -0.1481,
+       -0.0278
+      ],
+      "excludes_zero": true
+     },
+     "noise_5dB": {
+      "diff": -0.6852,
+      "ci": [
+       -0.8148,
+       -0.5648
+      ],
+      "excludes_zero": true
+     },
+     "noise_mix": {
+      "diff": -0.4167,
+      "ci": [
+       -0.5556,
+       -0.2315
+      ],
+      "excludes_zero": true
+     },
+     "pause_change": {
+      "diff": -0.7593,
+      "ci": [
+       -0.9074,
+       -0.6111
+      ],
+      "excludes_zero": true
+     }
+    },
+    "auc": {
+     "pause_change": {
+      "diff": -0.1505,
+      "ci": [
+       -0.2859,
+       -0.0164
+      ],
+      "excludes_zero": true
+     },
+     "delivery_change": {
+      "diff": 0.2811,
+      "ci": [
+       0.2219,
+       0.3522
+      ],
+      "excludes_zero": true
+     }
+    }
+   },
+   "P1-B1": {
+    "rate": {
+     "change_plus_noise": {
+      "diff": -0.1019,
+      "ci": [
+       -0.2685,
+       0.0648
+      ],
+      "excludes_zero": false
+     },
+     "clean": {
+      "diff": 0.0185,
+      "ci": [
+       -0.0185,
+       0.0648
+      ],
+      "excludes_zero": false
+     },
+     "delivery_change": {
+      "diff": 0.0185,
+      "ci": [
+       -0.0185,
+       0.0463
+      ],
+      "excludes_zero": false
+     },
+     "delivery_plus_noise": {
+      "diff": -0.0463,
+      "ci": [
+       -0.0833,
+       -0.0093
+      ],
+      "excludes_zero": true
+     },
+     "noise_0dB": {
+      "diff": -0.1852,
+      "ci": [
+       -0.3148,
+       -0.0741
+      ],
+      "excludes_zero": true
+     },
+     "noise_10dB": {
+      "diff": -0.0185,
+      "ci": [
+       -0.0833,
+       0.0463
+      ],
+      "excludes_zero": false
+     },
+     "noise_20dB": {
+      "diff": -0.0278,
+      "ci": [
+       -0.0833,
+       0.0185
+      ],
+      "excludes_zero": false
+     },
+     "noise_5dB": {
+      "diff": -0.1852,
+      "ci": [
+       -0.3333,
+       -0.0648
+      ],
+      "excludes_zero": true
+     },
+     "noise_mix": {
+      "diff": 0.0278,
+      "ci": [
+       0.0093,
+       0.0463
+      ],
+      "excludes_zero": true
+     },
+     "pause_change": {
+      "diff": -0.0093,
+      "ci": [
+       -0.0926,
+       0.0741
+      ],
+      "excludes_zero": false
+     }
+    },
+    "auc": {
+     "pause_change": {
+      "diff": 0.0425,
+      "ci": [
+       0.0123,
+       0.0793
+      ],
+      "excludes_zero": true
+     },
+     "delivery_change": {
+      "diff": 0.0291,
+      "ci": [
+       -0.0142,
+       0.0789
+      ],
+      "excludes_zero": false
+     }
+    }
+   },
+   "B1-B0": {
+    "rate": {
+     "change_plus_noise": {
+      "diff": -0.6389,
+      "ci": [
+       -0.8056,
+       -0.4905
+      ],
+      "excludes_zero": true
+     },
+     "clean": {
+      "diff": -0.0278,
+      "ci": [
+       -0.0648,
+       0.0185
+      ],
+      "excludes_zero": false
+     },
+     "delivery_change": {
+      "diff": -0.0278,
+      "ci": [
+       -0.0926,
+       0.0463
+      ],
+      "excludes_zero": false
+     },
+     "delivery_plus_noise": {
+      "diff": -0.5556,
+      "ci": [
+       -0.6759,
+       -0.4537
+      ],
+      "excludes_zero": true
+     },
+     "noise_0dB": {
+      "diff": -0.4815,
+      "ci": [
+       -0.6389,
+       -0.3519
+      ],
+      "excludes_zero": true
+     },
+     "noise_10dB": {
+      "diff": -0.463,
+      "ci": [
+       -0.6019,
+       -0.3056
+      ],
+      "excludes_zero": true
+     },
+     "noise_20dB": {
+      "diff": -0.0648,
+      "ci": [
+       -0.1481,
+       0.037
+      ],
+      "excludes_zero": false
+     },
+     "noise_5dB": {
+      "diff": -0.5,
+      "ci": [
+       -0.6574,
+       -0.3609
+      ],
+      "excludes_zero": true
+     },
+     "noise_mix": {
+      "diff": -0.4444,
+      "ci": [
+       -0.5926,
+       -0.25
+      ],
+      "excludes_zero": true
+     },
+     "pause_change": {
+      "diff": -0.75,
+      "ci": [
+       -0.8981,
+       -0.5648
+      ],
+      "excludes_zero": true
+     }
+    },
+    "auc": {
+     "pause_change": {
+      "diff": -0.193,
+      "ci": [
+       -0.3052,
+       -0.0875
+      ],
+      "excludes_zero": true
+     },
+     "delivery_change": {
+      "diff": 0.252,
+      "ci": [
+       0.2127,
+       0.2935
+      ],
+      "excludes_zero": true
+     }
+    }
+   }
+  }
+ },
+ "noise_sweep": {
+  "levels_db": [
+   20,
+   10,
+   5,
+   0
+  ],
+  "by_method": {
+   "B0": [
+    {
+     "rate": 0.3333,
+     "ci": [
+      0.1667,
       0.5
      ],
      "n": 36
     },
-    "noise_mix": {
-     "rate": 0.4722,
+    {
+     "rate": 0.8611,
      "ci": [
-      0.25,
-      0.6674
-     ],
-     "n": 36
-    },
-    "pause_change": {
-     "rate": 0.8333,
-     "ci": [
-      0.5556,
+      0.6944,
       1.0
      ],
      "n": 36
     },
-    "noise_20dB": {
-     "rate": 0.5278,
+    {
+     "rate": 1.0,
      "ci": [
-      0.3333,
-      0.7222
+      1.0,
+      1.0
      ],
      "n": 36
     },
-    "noise_10dB": {
-     "rate": 0.6111,
+    {
+     "rate": 1.0,
      "ci": [
-      0.3056,
-      0.8611
-     ],
-     "n": 36
-    },
-    "noise_5dB": {
-     "rate": 0.75,
-     "ci": [
-      0.4444,
-      0.9444
-     ],
-     "n": 36
-    },
-    "noise_0dB": {
-     "rate": 0.8611,
-     "ci": [
-      0.6944,
-      0.9722
+      1.0,
+      1.0
      ],
      "n": 36
     }
-   },
-   "B1": {
-    "clean": {
+   ],
+   "P1": [
+    {
+     "rate": 0.1111,
+     "ci": [
+      0.0278,
+      0.2222
+     ],
+     "n": 36
+    },
+    {
+     "rate": 0.1944,
+     "ci": [
+      0.0556,
+      0.3889
+     ],
+     "n": 36
+    },
+    {
+     "rate": 0.4444,
+     "ci": [
+      0.25,
+      0.6111
+     ],
+     "n": 36
+    },
+    {
+     "rate": 0.5833,
+     "ci": [
+      0.3333,
+      0.7778
+     ],
+     "n": 36
+    }
+   ],
+   "B1": [
+    {
      "rate": 0.25,
      "ci": [
       0.1111,
@@ -181,264 +2155,64 @@
      ],
      "n": 36
     },
-    "noise_mix": {
+    {
      "rate": 0.3333,
      "ci": [
-      0.1944,
-      0.5
+      0.1667,
+      0.5278
      ],
      "n": 36
     },
-    "pause_change": {
-     "rate": 0.8333,
+    {
+     "rate": 0.6667,
      "ci": [
-      0.5556,
-      1.0
-     ],
-     "n": 36
-    },
-    "noise_20dB": {
-     "rate": 0.3889,
-     "ci": [
-      0.1389,
-      0.6674
-     ],
-     "n": 36
-    },
-    "noise_10dB": {
-     "rate": 0.5833,
-     "ci": [
-      0.3611,
-      0.8056
-     ],
-     "n": 36
-    },
-    "noise_5dB": {
-     "rate": 0.7778,
-     "ci": [
-      0.6389,
+      0.3889,
       0.9167
      ],
      "n": 36
     },
-    "noise_0dB": {
-     "rate": 0.9444,
+    {
+     "rate": 0.6111,
      "ci": [
-      0.8333,
-      1.0
+      0.3611,
+      0.8333
      ],
      "n": 36
     }
-   }
-  },
-  "window": {
-   "B0": {
-    "clean": {
-     "rate": 0.2037,
-     "ci": [
-      0.1296,
-      0.2685
-     ],
-     "n": 108
-    },
-    "noise_mix": {
-     "rate": 0.6111,
-     "ci": [
-      0.4352,
-      0.7778
-     ],
-     "n": 108
-    },
-    "pause_change": {
-     "rate": 0.9815,
-     "ci": [
-      0.9444,
-      1.0
-     ],
-     "n": 108
-    },
-    "noise_20dB": {
-     "rate": 0.4167,
-     "ci": [
-      0.3056,
-      0.5185
-     ],
-     "n": 108
-    },
-    "noise_10dB": {
-     "rate": 0.787,
-     "ci": [
-      0.6387,
-      0.9074
-     ],
-     "n": 108
-    },
-    "noise_5dB": {
-     "rate": 0.9167,
-     "ci": [
-      0.8704,
-      0.963
-     ],
-     "n": 108
-    },
-    "noise_0dB": {
-     "rate": 0.9537,
-     "ci": [
-      0.9444,
-      0.9722
-     ],
-     "n": 108
-    }
-   },
-   "P1": {
-    "clean": {
-     "rate": 0.3426,
-     "ci": [
-      0.2685,
-      0.4074
-     ],
-     "n": 108
-    },
-    "noise_mix": {
-     "rate": 0.4444,
-     "ci": [
-      0.3333,
-      0.5463
-     ],
-     "n": 108
-    },
-    "pause_change": {
-     "rate": 0.5741,
-     "ci": [
-      0.2778,
-      0.8611
-     ],
-     "n": 108
-    },
-    "noise_20dB": {
-     "rate": 0.3889,
-     "ci": [
-      0.25,
-      0.5
-     ],
-     "n": 108
-    },
-    "noise_10dB": {
-     "rate": 0.4722,
-     "ci": [
-      0.3241,
-      0.6111
-     ],
-     "n": 108
-    },
-    "noise_5dB": {
-     "rate": 0.6852,
-     "ci": [
-      0.4722,
-      0.8148
-     ],
-     "n": 108
-    },
-    "noise_0dB": {
-     "rate": 0.713,
-     "ci": [
-      0.5185,
-      0.8889
-     ],
-     "n": 108
-    }
-   },
-   "B1": {
-    "clean": {
-     "rate": 0.2685,
-     "ci": [
-      0.2037,
-      0.3333
-     ],
-     "n": 108
-    },
-    "noise_mix": {
-     "rate": 0.2778,
-     "ci": [
-      0.213,
-      0.3519
-     ],
-     "n": 108
-    },
-    "pause_change": {
-     "rate": 0.463,
-     "ci": [
-      0.213,
-      0.713
-     ],
-     "n": 108
-    },
-    "noise_20dB": {
-     "rate": 0.3611,
-     "ci": [
-      0.25,
-      0.4815
-     ],
-     "n": 108
-    },
-    "noise_10dB": {
-     "rate": 0.463,
-     "ci": [
-      0.2963,
-      0.5926
-     ],
-     "n": 108
-    },
-    "noise_5dB": {
-     "rate": 0.6667,
-     "ci": [
-      0.463,
-      0.8241
-     ],
-     "n": 108
-    },
-    "noise_0dB": {
-     "rate": 0.7037,
-     "ci": [
-      0.5093,
-      0.8611
-     ],
-     "n": 108
-    }
-   }
-  },
-  "tau": {
-   "B0": {
-    "session": 0.08520169847905273,
-    "window": 0.18011258238214287
-   },
-   "P1": {
-    "session": 0.20653019407634995,
-    "window": 0.3737848505021057
-   },
-   "B1": {
-    "session": 0.3322688824265125,
-    "window": 0.5491079106241948
-   }
+   ]
   }
  },
  "conditions": {
-  "clean": "unchanged clean speech (expected ~10% by construction)",
-  "noise_mix": "held-out noise/babble 10-30 dB, sometimes with reverb or mic coloring",
-  "noise_20dB": "held-out noise or babble at 20 dB SNR, additive only",
-  "noise_10dB": "held-out noise or babble at 10 dB SNR, additive only",
-  "noise_5dB": "held-out noise or babble at 5 dB SNR, additive only",
-  "noise_0dB": "held-out noise or babble at 0 dB SNR, additive only",
-  "pause_change": "SYNTHETIC controlled change: room-tone pauses inserted after each speech run"
+  "clean": "Unchanged clean speech (should alert about 10% by design)",
+  "noise_mix": "Held-out noise or babble at 10-30 dB, sometimes with reverb or mic coloring",
+  "pause_change": "SYNTHETIC change: room-tone pauses inserted after each phrase (should alert)",
+  "noise_20dB": "Held-out noise or babble added at 20 dB SNR",
+  "noise_10dB": "Held-out noise or babble added at 10 dB SNR",
+  "noise_5dB": "Held-out noise or babble added at 5 dB SNR",
+  "noise_0dB": "Held-out noise or babble added at 0 dB SNR",
+  "delivery_change": "SYNTHETIC change: 20% slower delivery, pitch unchanged (should alert)",
+  "change_plus_noise": "Inserted pauses AND held-out noise at 10 dB (should alert)",
+  "delivery_plus_noise": "Slower delivery AND held-out noise at 10 dB (should alert)"
+ },
+ "should_alert": [
+  "change_plus_noise",
+  "delivery_change",
+  "delivery_plus_noise",
+  "pause_change"
+ ],
+ "models": {
+  "B0": "Raw WavLM-base layer embedding, no projection (baseline).",
+  "P1": "B1 plus acoustic preservation: the head must also predict pause fraction, pitch variability and speech-run rate, so that real delivery changes are not projected away.",
+  "B1": "Projection trained for noise invariance only (invariance, variance and covariance terms). Simplest head."
  },
  "meta": {
   "wavlm_layer": 6,
   "eval_speakers": 6,
-  "train_speakers_for_boundary": 18,
+  "train_speakers": 18,
   "session_windows": 3,
   "boundary_quantile": 0.9,
   "distance": "cosine",
-  "bootstrap": "2000 resamples over evaluation speakers",
+  "bootstrap": "2000 resamples over evaluation speakers, shared across models (paired)",
   "models": [
    "B0",
    "P1",
@@ -446,9 +2220,11 @@
   ]
  },
  "limitations": [
-  "Small: 6 held-out speakers (Androids interview speech, Italian).",
-  "The speech change is synthetic (inserted pauses), not real slower or flatter delivery.",
-  "Leave-one-session-out pseudo-sessions come from one interview: same day, same room. Real day-to-day variation is larger, so these false-alert rates are a lower bound.",
+  "Small: 6 held-out speakers, all from one Italian interview corpus (Androids).",
+  "Both speech changes are synthetic (inserted pauses; 20% time-stretch), not recordings of people actually speaking more slowly or flatly.",
+  "Neither the raw nor the projected embedding detected 20% slower delivery: alert rates matched those on unchanged speech. Averaging each 8 s window removes most speaking-rate information, so the overall voice-pattern score should not be described as detecting slowed speech; speaking rate is reported separately.",
+  "Sessions are pseudo-sessions cut from one interview: same day, same room, same microphone. Real day-to-day variation is larger, so real false-alert rates will be higher than these.",
+  "The matched boundary is set from the other evaluation speakers' clean audio (cross-validated), not from each person's own baseline as in the app.",
   "Speech-change sensitivity says nothing about detecting any health condition."
  ]
 }

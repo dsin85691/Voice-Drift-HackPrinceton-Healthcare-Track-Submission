@@ -176,14 +176,27 @@ def summarize(D: dict, taus: dict, spks: list, B: int, seed: int) -> dict:
 
 
 def sentence(primary_rates: dict, a: str, b: str, change: str) -> str:
-    """The section-2 sentence, filled only from computed numbers."""
+    """The section-2 sentence, filled only from computed numbers. Every available speech change is reported, and a
+    change detected at about the clean (unchanged) rate is said to be undetected rather than presented as detection."""
     p = lambda r: f"{round(r['rate'] * 100)}%" if r and r.get("rate") is not None else "n/a"
     ra, rb = primary_rates[a], primary_rates[b]
     clean = f"{p(rb['clean'])} ({b}) and {p(ra['clean'])} ({a})"
+    names = {"pause_change": "synthetic pauses", "delivery_change": "20% slower delivery"}
+    parts = []
+    for c in ("pause_change", "delivery_change"):
+        if c not in ra or c not in rb:
+            continue
+        txt = f"{names[c]} were detected in {p(rb[c])} versus {p(ra[c])}" if c == "pause_change" else \
+              f"{names[c]} in {p(rb[c])} versus {p(ra[c])}"
+        near = all(r[c]["rate"] is not None and r["clean"]["rate"] is not None and r[c]["rate"] - r["clean"]["rate"] <= 0.10
+                   for r in (ra, rb))
+        if near:
+            txt += " (about the same rate as on unchanged speech, so neither model detects it)"
+        parts.append(txt)
+    changes = " and ".join(parts) if parts else f"a controlled change was detected in {p(rb.get(change))} versus {p(ra.get(change))}"
     return (f"At a matched clean-speech alert rate ({clean}, target 10%), added noise at 10 dB triggered alerts in "
-            f"{p(rb.get(NOISE_REF))} of unchanged sessions with raw WavLM and {p(ra.get(NOISE_REF))} with the projection, "
-            f"while a controlled speech change ({'synthetic pauses' if change == 'pause_change' else 'slower delivery'}) "
-            f"was detected in {p(rb.get(change))} versus {p(ra.get(change))}.")
+            f"{p(rb.get(NOISE_REF))} of unchanged sessions with raw WavLM and {p(ra.get(NOISE_REF))} with the projection; "
+            f"{changes}.")
 
 
 # ------------------------------------------------------------------ feature loading (needs torch / pandas)
@@ -309,7 +322,7 @@ def run(feat_dir="lite_feats", ckpt_dir="reports/checkpoints", layer: int = 6, o
     if proj and NOISE_REF in S["rates"][b]:
         pd_ = S["paired_differences"].get(f"{proj}-{b}", {"rate": {}, "auc": {}})
         head = {"level": "session (3 windows, ~24 s)", "operating_point": "matched", "projection_model": proj,
-                "noise_condition": "held-out noise or babble added at 10 dB SNR",
+                "noise_condition": "held-out noise or babble added at 10 dB SNR", "change_key": change,
                 "change_condition": CONDITION_TEXT[change],
                 "sentence": sentence(S["rates"], proj, b, change),
                 "false_alert_raw": S["rates"][b][NOISE_REF], "false_alert_projection": S["rates"][proj][NOISE_REF],
@@ -318,6 +331,9 @@ def run(feat_dir="lite_feats", ckpt_dir="reports/checkpoints", layer: int = 6, o
                 "clean_false_alert_raw": S["rates"][b]["clean"], "clean_false_alert_projection": S["rates"][proj]["clean"],
                 "primary_difference": pd_["rate"].get(NOISE_REF), "change_difference": pd_["rate"].get(change),
                 "auc_raw": S["auc"].get(b, {}).get(change), "auc_projection": S["auc"].get(proj, {}).get(change)}
+    if head and not all(matched.get(m, {}).get("session", {}).get("within_tolerance") for m in (proj, b)):
+        # honest wording: the procedure is fixed in advance; if a model lands outside the tolerance, say so
+        head["sentence"] = head["sentence"].replace("At a matched", "At an approximately matched", 1)
     sweep_levels = [c for c in ("noise_20dB", "noise_10dB", "noise_5dB", "noise_0dB") if c in S["rates"].get("B0", {})]
     res = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "illustrative": False, "schema": 2,
            "primary_comparison": PRIMARY, "headline": head,
@@ -343,14 +359,23 @@ def run(feat_dir="lite_feats", ckpt_dir="reports/checkpoints", layer: int = 6, o
                     "models": list(models)},
            "limitations": [
                f"Small: {len(eval_spk)} held-out speakers, all from one Italian interview corpus (Androids).",
-               "Both speech changes are synthetic (inserted pauses; 20% time-stretch), not recordings of people "
-               "actually speaking more slowly or flatly.",
+               ("Both speech changes are synthetic (inserted pauses; 20% time-stretch), not recordings of people "
+                "actually speaking more slowly or flatly." if "delivery_change" in S["rates"].get("B0", {}) else
+                "The speech change is synthetic (inserted pauses), not recordings of people actually speaking more "
+                "slowly or flatly. The slower-delivery condition was not available for this run."),
                "Sessions are pseudo-sessions cut from one interview: same day, same room, same microphone. Real "
                "day-to-day variation is larger, so real false-alert rates will be higher than these.",
                "The matched boundary is set from the other evaluation speakers' clean audio (cross-validated), not "
                "from each person's own baseline as in the app.",
                "Speech-change sensitivity says nothing about detecting any health condition."]}
     res["matched_operating_point"]["target_clean_rate"] = round(1 - q, 4)
+    SR_ = S["rates"]
+    if all("delivery_change" in SR_.get(m, {}) for m in ("B0", proj or "P1")) and all(
+            SR_[m]["delivery_change"]["rate"] - SR_[m]["clean"]["rate"] <= 0.10 for m in ("B0", proj or "P1")):
+        res["limitations"].insert(2, "Neither the raw nor the projected embedding detected 20% slower delivery: alert "
+                                     "rates matched those on unchanged speech. Averaging each 8 s window removes most "
+                                     "speaking-rate information, so the overall voice-pattern score should not be "
+                                     "described as detecting slowed speech; speaking rate is reported separately.")
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(res, indent=1))

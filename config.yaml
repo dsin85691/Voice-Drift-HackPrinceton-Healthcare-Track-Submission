@@ -83,7 +83,8 @@ monitoring:                                 # speech-change review flags (alerti
 
 results:
   aggregate: results/aggregate.json         # written by: python -m research.lite.aggregate
-  demo_snapshot: results/demo_snapshot.json # written by the one-click demo (last real run)
+  demo_snapshot: results/demo_snapshot.json # noise demo, measured once and cached (served only while still valid)
+  sample_snapshot: results/sample_snapshot.json  # "Analyze sample recording", measured once and cached
 
 about:
   # shown on About & Privacy. Each entry is a name string, or {name, affiliation, bio}.
@@ -99,6 +100,7 @@ about:
         Intern at Oracle.
 
 demo:                                       # one-click demos (Home + Results). Paths are relative to the repo root.
+  warm_on_start: true                       # measure both demos in the background at start-up, so clicks are instant
   # Bundled audio = the bakery passage read by an offline Windows text-to-speech voice (Microsoft David). It is
   # SYNTHETIC speech, labelled as such everywhere; it exercises the real pipeline, it is not a person's voice.
   clip: server/demo_assets/sample_normal.wav   # noise-robustness replay (clean vs noisy copy of the same reading)

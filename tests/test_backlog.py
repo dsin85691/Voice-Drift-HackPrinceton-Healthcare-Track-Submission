@@ -25,9 +25,13 @@ def test_one_click_sample_runs_the_real_pipeline_and_fills_the_contract(client):
         assert k in ck
     assert ck["acoustic_features"]["pause_fraction"]["status"] == "VALID"
     assert ck["evidence"] == [] and ck["protocol"]["task_type"] == "read_speech"   # VD-05: no symptom mining
-    # second click reuses the baseline; tmp stays empty; bundled files are never deleted
+    # second click is served from the measured snapshot: same result, no new analysis
     j2 = client.post("/api/demo/sample").json()
-    assert j2["baseline_built_now"] is False
+    assert j2["cached"] is True and j2["checkin"]["checkin_id"] == ck["checkin_id"] and j["cached"] is False
+    assert j2["ran_at"] and j2["model"] and j2["compute_seconds"] >= 0
+    # fresh=1 re-measures live and reuses the baseline; tmp stays empty; bundled files are never deleted
+    j3 = client.post("/api/demo/sample", params={"fresh": 1}).json()
+    assert j3["cached"] is False and j3["baseline_built_now"] is False and j3["checkin"]["checkin_id"] != ck["checkin_id"]
     assert list(client.tmp_path.iterdir()) == []
     tl = client.get("/api/patients/p_sample/timeline").json()
     assert tl["patient"]["data_mode"] == "demo_synthetic_voice" and len(tl["checkins"]) == 7
@@ -42,6 +46,23 @@ def test_noise_replay_demo_works_with_bundled_audio(client, tmp_path, monkeypatc
     r = client.post("/api/demo/run")
     assert r.status_code == 200, r.text
     assert r.json()["noisy"]["data_mode"] == "controlled_experiment"
+
+
+def test_demo_cache_is_served_instantly_never_stale_and_warm_fills_both(client, monkeypatch):
+    import time
+    from server.config import get_config
+    w = client.post("/api/demo/warm").json()
+    assert w["state"] == "ready" and w["sample_cached"] and w["replay_cached"]
+    res = client.get("/api/results").json()
+    assert res["sample_snapshot"] and res["demo_snapshot"] and res["demo_warm"]["state"] == "ready"
+    for path in ("/api/demo/sample", "/api/demo/run"):
+        t = time.perf_counter()
+        j = client.post(path).json()
+        assert j["cached"] is True and time.perf_counter() - t < 1.0      # instant: no analysis on click
+    # anything that could change the result invalidates the snapshot: it is never served stale
+    monkeypatch.setitem(get_config()["demo"], "snr_db", 5)
+    assert client.get("/api/results").json()["demo_snapshot"] is None
+    assert client.post("/api/demo/run").json()["cached"] is False             # re-measured with the new setting
 
 
 def test_missing_sample_audio_is_a_clear_409_not_a_crash(client, monkeypatch):
@@ -106,6 +127,7 @@ def test_queue_items_carry_trigger_score_and_reviewed_leaves_pending(client):
     f = pend[0]
     assert f["trigger"]["normalized_score"] > 1.0 and f["trigger"]["threshold"] == 1.0 and f["trigger"]["checkin_id"]
     assert f["review_state"] == "pending"
+    assert f["qualifying_checkins"] == 2 and f["considered_checkins"] == 3      # "2 of 3", stated explicitly
     tl = client.get("/api/patients/p_drift/timeline").json()
     flagged = [c for c in tl["checkins"] if c.get("review_flag")]
     assert flagged and all(c["drift_status"] == "elevated" for c in flagged)  # same decisions as the queue

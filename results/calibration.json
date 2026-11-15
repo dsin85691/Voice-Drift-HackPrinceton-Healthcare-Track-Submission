@@ -1,0 +1,73 @@
+{
+ "generated_at": "2026-11-15T01:34:33Z",
+ "target_clean_false_alert_rate": 0.1,
+ "level": "session",
+ "method": "Per evaluation speaker, the boundary is the 90th percentile of the OTHER evaluation speakers' clean session distances (leave-one-speaker-out), computed separately for each model.",
+ "frozen_before_test": "each speaker's boundary is fixed from OTHER speakers' clean sessions before any of that speaker's noisy or changed sessions are scored",
+ "sample_size_note": "36 clean sessions across 6 speakers (about 6 each): one session is about 17 points of a speaker's rate, so the target rate can only be approximated.",
+ "methods": {
+  "B0": {
+   "thresholds_by_speaker": {
+    "10_CF51_2": 0.11273,
+    "26_CM31_3": 0.09759,
+    "27_CF63_4": 0.09759,
+    "37_CF69_1": 0.07975,
+    "54_CM48_2": 0.11273,
+    "69_PF48_3": 0.11273
+   },
+   "threshold_mean": 0.10219,
+   "observed_clean_false_alert_rate": {
+    "rate": 0.1667,
+    "ci": [
+     0.0278,
+     0.3889
+    ],
+    "n": 36
+   },
+   "within_tolerance": false,
+   "train_speaker_threshold": 0.0852
+  },
+  "P1": {
+   "thresholds_by_speaker": {
+    "10_CF51_2": 0.4008,
+    "26_CM31_3": 0.31431,
+    "27_CF63_4": 0.31431,
+    "37_CF69_1": 0.28951,
+    "54_CM48_2": 0.4008,
+    "69_PF48_3": 0.4008
+   },
+   "threshold_mean": 0.35342,
+   "observed_clean_false_alert_rate": {
+    "rate": 0.1111,
+    "ci": [
+     0.0278,
+     0.2222
+    ],
+    "n": 36
+   },
+   "within_tolerance": true,
+   "train_speaker_threshold": 0.20653
+  },
+  "B1": {
+   "thresholds_by_speaker": {
+    "10_CF51_2": 0.45181,
+    "26_CM31_3": 0.42374,
+    "27_CF63_4": 0.42374,
+    "37_CF69_1": 0.41936,
+    "54_CM48_2": 0.45181,
+    "69_PF48_3": 0.44592
+   },
+   "threshold_mean": 0.43607,
+   "observed_clean_false_alert_rate": {
+    "rate": 0.1111,
+    "ci": [
+     0.0278,
+     0.2222
+    ],
+    "n": 36
+   },
+   "within_tolerance": true,
+   "train_speaker_threshold": 0.33227
+  }
+ }
+}

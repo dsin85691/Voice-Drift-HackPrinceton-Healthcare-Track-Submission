@@ -39,6 +39,10 @@ def tmp_env(tmp_path, monkeypatch):
     monkeypatch.setitem(cfg["server"], "db_url", url)
     # never depend on whatever trained artifacts happen to be on this machine (artifacts/ is git-ignored)
     monkeypatch.setitem(cfg["artifacts"], "dir", str(tmp_path / "no_artifacts"))
+    # demos: no background warm-up during tests, and snapshots never written into the repo's results/
+    monkeypatch.setitem(cfg["demo"], "warm_on_start", False)
+    monkeypatch.setitem(cfg["results"], "demo_snapshot", str(tmp_path / "demo_snapshot.json"))
+    monkeypatch.setitem(cfg["results"], "sample_snapshot", str(tmp_path / "sample_snapshot.json"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     store.reset_engine(url)
     return tmp_path

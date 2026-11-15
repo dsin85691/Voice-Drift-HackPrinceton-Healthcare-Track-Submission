@@ -173,8 +173,18 @@ async function route() {
     // kit "prototype ribbon": the same disclaimer on every page (backlog VD-06)
     $app.insertAdjacentHTML("afterbegin", `<div class="ribbon">${icon("info", 18)}<span><strong>Research prototype:</strong> ${esc(DISCLAIMER)}</span></div>`);
   } catch (e) {
-    $app.innerHTML = `<div class="callout caution" role="alert"><h3>The service is unavailable</h3>
-      <p>We couldn't load this page (${esc(e.message)}). Check that the Voice Drift server is running, then reload.</p></div>`;
+    $app.innerHTML = `<div class="callout caution" role="alert"><h3>Reconnecting to the Voice Drift server…</h3>
+      <p>We couldn't load this page (${esc(e.message)}). If the server is restarting, this page reloads by itself as soon as it is back.</p>
+      <p class="small muted" id="reconn">Checking every 3 seconds.</p></div>`;
+    // auto-recover after a server restart: poll health, then re-render the same page (no manual reload needed)
+    const iv = setInterval(async () => {
+      try {
+        const r = await fetch("/api/health", { cache: "no-store" });
+        if (r.ok) { clearInterval(iv); S.health = null; route(); }
+      } catch { const el = document.getElementById("reconn"); if (el) el.textContent = `Still waiting for the server (${new Date().toLocaleTimeString()}).`; }
+    }, 3000);
+    const prev = cleanup;
+    cleanup = () => { clearInterval(iv); prev(); };
   }
   $app.focus({ preventScroll: true });
 }
@@ -245,7 +255,7 @@ async function viewHome() {
         <div class="vd-visual-foot">${waveformHtml()}<span>compared with your own baseline</span></div></div>
     </section>
     ${tl && tl.repeat_requested ? `<div class="callout info" style="margin:16px 0"><h3>Repeat check-in requested</h3><p class="small">Your reviewer asked for another check-in using the same reading passage. This is a request for another recording, not a treatment instruction.</p><a class="btn primary" href="#/checkin">${icon("mic")}Start check-in</a></div>` : ""}
-    ${synthetic ? `<div class="callout caution" style="margin:16px 0"><h3>Synthetic demo profile</h3><p class="small">Every value on this profile is generated for the demo; the last two days simulate deliberately slower, flatter speech. Switch profile at the top to see real recordings.</p></div>` : ""}
+    ${synthetic ? `<div class="callout caution" style="margin:16px 0"><h3>Synthetic demo profile</h3><p class="small">Every value on this profile is generated for the demo, in a simplified feature space, to illustrate the monitoring and review workflow. The last two days are set to differ from the baseline; they are not a measurement of slower speech, and the trained model's overall score is not shown to detect slowed speech (see Results). Switch profile at the top to see real recordings.</p></div>` : ""}
 
     <div class="section-title"><div><div class="eyebrow">The current picture</div><h2>At a glance <span>&middot; ${last ? `latest check-in ${fmtDT(last.created_at)}` : "no check-ins yet"}</span></h2></div>
       <span class="small muted">${ready ? `Baseline set ${fmtDate(tl.baseline.frozen_at)} from ${need} recordings` : `Baseline ${Math.min(passes, need)} of ${need}`}</span></div>
@@ -419,7 +429,7 @@ function sessionChart(cks, { height = 240 } = {}) {
     <p class="small muted">Vertical axis: how far each check-in's voice is from your baseline, as a multiple of the usual-range boundary (1 = the edge of normal day-to-day variation). Horizontal axis: check-in date.
       ${vals.length} compared check-in${vals.length === 1 ? "" : "s"}, ${nAbove} above the boundary, ${nBase} baseline or not compared, ${nRej} not usable. Each point is one whole check-in (session level).
       ${isClin() ? "A single point above 1 is an observation; a review-queue item needs 2 of the last 3 usable check-ins above 1, on at least 2 different days within 7 days. " : "A single point above 1 can happen for many reasons, such as the room, the microphone or a slower morning. "}Select a point to see its measurements.</p>
-    ${acted ? `<p class="small"><span class="mode synthetic_demo">acted</span> marks simulated days that stand in for deliberately slower, flatter ("acted") speech. The values are generated for the demo; nobody's real speech changed.</p>` : ""}</figure>`;
+    ${acted ? `<p class="small"><span class="mode synthetic_demo">acted</span> marks simulated days generated to differ from the baseline, to illustrate the review workflow. They are not measurements of real or acted speech, and nobody's real speech changed.</p>` : ""}</figure>`;
 }
 
 // ------------------------------------------------------------------ Check-in (patient)
@@ -615,19 +625,33 @@ function renderOutcome(r) {
 function sampleCardHtml(res) {
   const sp = res && res.sample;
   const ok = sp && sp.present;
+  const warmMsg = demoWarmMsg(res, res && res.sample_snapshot);
   return `<section class="card stack" aria-labelledby="smp-h">
     <div class="row"><h2 id="smp-h" style="margin:0">Try it without recording</h2><span class="spacer"></span>
       <button class="primary" id="samplebtn" ${ok ? "" : "disabled"}>${icon("analysis")}Analyze sample recording</button></div>
     <p class="small">${esc(INSTRUCTION)}</p>
-    <p class="small muted">The sample is the standard passage read by a <strong>synthetic text-to-speech voice</strong>, not a person. One click analyses it with the same pipeline as a real check-in, against a baseline built from five other readings by the same synthetic voice (built automatically the first time, which takes longer).</p>
+    <p class="small muted">The sample is the standard passage read by a <strong>synthetic text-to-speech voice</strong>, not a person. It is analysed with the same pipeline as a real check-in, against a baseline built from five other readings by the same synthetic voice. The analysis is measured once in advance, so the result appears straight away.</p>
     ${ok ? "" : '<p class="small callout caution">The bundled sample audio is missing from this deployment, so the demo is unavailable. Everything else still works.</p>'}
-    <p id="samplemsg" role="status" class="small"></p><div id="sampleout"></div></section>`;
+    <p id="samplemsg" role="status" class="small">${warmMsg}</p><div id="sampleout"></div></section>`;
+}
+// While the server measures the demos in the background (first minute or two after start-up), say so plainly.
+function demoWarmMsg(res, have) {
+  const w = (res && res.demo_warm) || {};
+  if (have) return "";
+  if (w.state === "running") return "Preparing the demo in the background (usually under two minutes after the server starts). This page updates when it is ready.";
+  if (w.state === "error") return `The demo couldn't be prepared (${esc(w.error || "error")}). Clicking the button will try again live.`;
+  return "";
+}
+function provenance(j) {
+  if (!j || !j.ran_at) return "";
+  return `<p class="tiny muted" style="margin:6px 0 0">${j.cached ? "Measured" : "Measured just now"} ${j.cached ? `on ${esc(fmtDT(j.ran_at))} ` : ""}by this server with ${esc(j.model || "")}${j.compute_seconds != null ? `; the analysis took ${j.compute_seconds} s` : ""}. ${j.cached ? "Shown from that measurement, which is reused only while the code, model and audio are unchanged." : ""}
+    <button class="linklike" data-fresh="${j.label ? "sample" : "replay"}" style="min-height:0;padding:2px 8px;font-size:13px">Re-run live</button></p>`;
 }
 function sampleResultHtml(j) {
   const c = j.checkin;
   const overall = c.drift_status === "unavailable" ? '<span class="muted">not available (no baseline or unusable recording)</span>'
     : `<strong>${fmt(c.drift_score)} &times; boundary</strong> ${statusPill(c.status)}`;
-  return `<div class="callout info small" style="margin:0">${modeTag("demo_synthetic_voice")} ${esc(j.label)}</div>
+  return `<div class="callout info small" style="margin:0">${modeTag("demo_synthetic_voice")} ${esc(j.label)}${provenance(j)}</div>
     <dl class="meta">
       <dt>Recording quality</dt><dd>${qualityPill(c.quality.verdict)} ${fmt(c.speech_duration_seconds, 0)} s of speech</dd>
       <dt>Overall voice pattern</dt><dd>${overall}<br><span class="tiny muted">Session score relative to this speaker's boundary. Above 1.0 means elevated; exactly 1.0 counts as within range.</span></dd>
@@ -640,21 +664,41 @@ function sampleResultHtml(j) {
 function wireSample(res) {
   const b = document.getElementById("samplebtn");
   if (!b) return;
-  b.onclick = async () => {
+  const msg = document.getElementById("samplemsg");
+  const show = (j) => {
+    document.getElementById("sampleout").innerHTML = sampleResultHtml(j);
+    const t = document.getElementById("sampletrends");
+    if (t) t.onclick = () => setPid(j.profile);
+    const fr = document.querySelector('#sampleout [data-fresh="sample"]');
+    if (fr) fr.onclick = () => run(true);
+  };
+  const run = async (fresh) => {
     b.disabled = true;                                    // no duplicate submissions while it runs
-    const msg = document.getElementById("samplemsg");
-    msg.textContent = "Analysing the sample recording… (the first run also builds the sample baseline and can take a minute)";
+    msg.textContent = fresh ? "Re-running the analysis live. This takes about a minute with the full speech model." : "Loading the measured analysis…";
     try {
-      const r = await fetch("/api/demo/sample", { method: "POST" });
+      const r = await fetch(`/api/demo/sample${fresh ? "?fresh=1" : ""}`, { method: "POST" });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.detail || `server error ${r.status}`);
-      msg.textContent = "Done.";
-      document.getElementById("sampleout").innerHTML = sampleResultHtml(j);
-      const t = document.getElementById("sampletrends");
-      if (t) t.onclick = () => setPid(j.profile);
+      msg.textContent = "";
+      show(j);
     } catch (e) { msg.textContent = "The sample analysis didn't complete: " + e.message + ". You can try again."; }
     b.disabled = !(res && res.sample && res.sample.present);
   };
+  b.onclick = () => run(false);
+  // still being measured in the background: check every 5 s and say when it's ready (stops on navigation)
+  if (!(res && res.sample_snapshot) && res && res.demo_warm && res.demo_warm.state === "running") {
+    const iv = setInterval(async () => {
+      const r2 = await api("/results").catch(() => null);
+      if (!r2) return;
+      if (r2.sample_snapshot || (r2.demo_warm && r2.demo_warm.state !== "running")) {
+        clearInterval(iv);
+        S.results = r2;
+        msg.textContent = r2.sample_snapshot ? "The demo is ready. Click \"Analyze sample recording\"." : demoWarmMsg(r2, false);
+      }
+    }, 5000);
+    const prev = cleanup;
+    cleanup = () => { clearInterval(iv); prev(); };
+  }
 }
 
 // ------------------------------------------------------------------ F4 acoustic evidence (shared)
@@ -1055,7 +1099,30 @@ function verdictV2(agg) {
     ? (pd.diff < 0 ? `At the matched operating point the projection produced fewer false alerts under 10 dB noise (${pts(pd.diff)} points, interval ${pts(pd.ci[0])} to ${pts(pd.ci[1])}).`
                    : `At the matched operating point the projection produced MORE false alerts under 10 dB noise (${pts(pd.diff)} points).`)
     : `At the matched operating point the difference in false alerts under 10 dB noise is ${pts(pd.diff)} points, but its interval (${pts(pd.ci[0])} to ${pts(pd.ci[1])}) includes zero, so it is not established with ${agg.meta.eval_speakers} speakers.`;
-  if (cd && cd.diff != null) s += cd.diff < -0.05 ? ` It also detected the speech change less often (${pts(cd.diff)} points${cd.excludes_zero ? "" : ", interval includes zero"}).` : " Detection of the speech change was similar.";
+  void cd;
+  // each speech change, with its own rates and its own threshold-free check (never mixing conditions)
+  const R = agg.results.session.matched, PD = agg.paired_differences["P1-B0"] || { rate: {}, auc: {} };
+  const NAME = { pause_change: "synthetic pauses", delivery_change: "20% slower delivery" };
+  const f2 = (x) => x.toFixed(2);
+  for (const c of ["pause_change", "delivery_change"]) {
+    if (!R.B0[c] || !R.P1[c]) continue;
+    const rB = R.B0[c].rate, rP = R.P1[c].rate, near = rB - R.B0.clean.rate <= 0.10 && rP - R.P1.clean.rate <= 0.10;
+    const aB = agg.auc.B0 && agg.auc.B0[c], aP = agg.auc.P1 && agg.auc.P1[c], ad = PD.auc[c], dr = PD.rate[c];
+    if (near) {
+      s += ` For ${NAME[c]}, neither model alerted more than on unchanged speech (${pct(R.B0[c])} raw, ${pct(R.P1[c])} projection)`;
+      if (aB && aP) s += `, and neither separated it from noise-only sessions better than chance (AUC ${f2(aB.value)} and ${f2(aP.value)}, where 0.5 is chance). Averaging each 8 s window largely removes speaking rate, which is why speaking rate is reported as a separate measurement`;
+      s += ".";
+      continue;
+    }
+    s += ` For ${NAME[c]}, the projection alerted ${dr && dr.diff < -0.05 ? `less often (${pct(R.P1[c])} vs ${pct(R.B0[c])}${dr.excludes_zero ? "" : ", interval includes zero"})` : `about as often (${pct(R.P1[c])} vs ${pct(R.B0[c])})`}`;
+    if (aB && aP && ad && ad.diff != null) {
+      s += Math.max(aB.value, aP.value) < 0.6
+        ? `, and neither model separated it from noise-only sessions better than chance (AUC ${f2(aB.value)} and ${f2(aP.value)}).`
+        : ad.diff < 0
+          ? `; without any boundary, raw WavLM separated it from noise-only sessions at least as well (AUC ${f2(aB.value)} vs ${f2(aP.value)}, difference interval ${f2(ad.ci[0])} to ${f2(ad.ci[1])}${ad.excludes_zero ? "" : ", includes zero"}). The fewer false alerts come largely with lower sensitivity: a trade-off, not a clear improvement.`
+          : `; without any boundary, the projection separated it from noise-only sessions better (AUC ${f2(aP.value)} vs ${f2(aB.value)}, difference interval ${f2(ad.ci[0])} to ${f2(ad.ci[1])}${ad.excludes_zero ? "" : ", includes zero"}).`;
+    } else s += ".";
+  }
   if (offTarget.length) s += ` Note: the clean alert rate for ${offTarget.join(", ")} fell outside 5–15%, so the operating points are only approximately matched.`;
   return s;
 }
@@ -1142,29 +1209,38 @@ async function viewResults() {
     <details class="card" style="margin-top:20px"><summary>Try your own recording (controlled experiment)</summary>${await labFormHtml()}</details>`;
   wireLab();
   wireSample(res);
-  if (snap) wireSnapshot(snap);
-  document.getElementById("rundemo").onclick = async (e) => {
-    e.target.disabled = true;
+  const runDemo = async (fresh) => {
+    const btn = document.getElementById("rundemo");
+    btn.disabled = true;
     const msg = document.getElementById("demomsg");
-    msg.textContent = "Analysing the clip, clean and with noise…";
+    msg.textContent = fresh ? "Re-running live: the clip is analysed clean and with noise (about a minute with the full speech model)…" : "Loading the measured analysis…";
     try {
-      const r = await fetch("/api/demo/run", { method: "POST" });
+      const r = await fetch(`/api/demo/run${fresh ? "?fresh=1" : ""}`, { method: "POST" });
       const j = await r.json();
       if (!r.ok) throw new Error(j.detail || r.status);
-      msg.textContent = "Done.";
+      msg.textContent = "";
       document.getElementById("demoout").innerHTML = demoSnapshotHtml(j);
       wireSnapshot(j);
-    } catch (err) { msg.textContent = "The demo failed: " + err.message; }
-    e.target.disabled = false;
+    } catch (err) { msg.textContent = "The demo failed: " + err.message + ". You can try again."; }
+    btn.disabled = false;
   };
+  document.getElementById("rundemo").onclick = () => runDemo(false);
+  wireReplayFresh = () => runDemo(true);
+  if (snap) wireSnapshot(snap);
+  if (!snap) { const m = document.getElementById("demomsg"); if (m && !m.textContent) m.textContent = demoWarmMsg(res, false); }
 }
+let wireReplayFresh = () => {};
 function demoSnapshotHtml(j) {
   const n = j.noise;
-  return `<p class="tiny muted">Measured output of the run at ${esc(fmtDT(j.ran_at))} with ${esc(j.model || "")}.</p>
+  return `${provenance({ ...j, cached: j.cached !== false })}
     ${analysisBlock(j.noisy, { key: "dnoisy", title: `With ${n.kind.replace("_", " ")} noise, ${n.start_seconds}–${n.end_seconds} s at ${n.snr_db} dB`, recordingLabel: "Bundled demo clip + noise" })}
     <details class="card"><summary>Same clip with no noise added</summary>${analysisBlock(j.clean, { key: "dclean", recordingLabel: "Bundled demo clip" })}</details>`;
 }
-function wireSnapshot(j) { wireAnalysis(j.noisy, "dnoisy"); wireAnalysis(j.clean, "dclean"); }
+function wireSnapshot(j) {
+  wireAnalysis(j.noisy, "dnoisy"); wireAnalysis(j.clean, "dclean");
+  const fr = document.querySelector('#demoout [data-fresh="replay"]');
+  if (fr) fr.onclick = () => wireReplayFresh();
+}
 
 // ------------------------------------------------------------------ Trends (session level)
 async function viewTrends() {
@@ -1293,14 +1369,15 @@ async function viewReviewQueue() {
     <p class="lead">Speech-change reviews raised by a persistence rule: at least 2 of the last 3 quality-passing check-ins above the person's own boundary, on separate days, within 7 days. This is an experimental heuristic, not a clinical decision rule. Items come from the same stored decisions shown on Home and Trends.</p>
     <div class="callout info small" style="margin-bottom:16px">${icon("shield", 16)} Demo mode: this queue is internal to the app. Nothing is sent to anyone outside it, and no real clinician is contacted.</div>
     <nav class="tabs" aria-label="Filter">${tab("pending", "Pending")}${tab("reviewed", "Reviewed")}${tab("all", "All")}</nav>
-    <div class="card tablewrap"><table><caption class="sr-only">Review items, newest first</caption><thead><tr><th>Person</th><th>Triggering check-in</th><th class="num">Score / boundary</th><th>Reason</th><th>Supporting changes</th><th>State</th><th>Data</th><th></th></tr></thead><tbody>
+    <div class="card tablewrap"><table><caption class="sr-only">Review items, newest first</caption><thead><tr><th>Person</th><th>Triggering check-in</th><th class="num">Score / boundary</th><th class="num">Check-ins above boundary</th><th>Reason</th><th>Supporting changes</th><th>State</th><th>Data</th><th></th></tr></thead><tbody>
       ${flags.map((f) => { const t = f.trigger || {}; const sup = [...(t.acoustic_summary || []), ...(t.timing_chips || []).map((x) => sentence(x.text))]; return `<tr><td>${esc(f.patient_display_name)}</td>
         <td class="small">${t.recorded_at ? fmtDT(t.recorded_at) : "&ndash;"}<br><span class="tiny muted">${esc(t.checkin_id || "")}</span></td>
         <td class="num"><strong>${fmt(t.normalized_score)}</strong> / ${fmt(t.threshold, 1)}</td>
+        <td class="num"><strong>${f.qualifying_checkins ?? "&ndash;"}</strong> of ${f.considered_checkins ?? f.supporting_checkins} considered<br><span class="tiny muted">the rule looks at the last ${f.summary.config ? f.summary.config.window_sessions : 3} usable check-ins</span></td>
         <td class="small">${esc(t.reason || f.summary.explanation)}</td>
         <td class="small">${sup.length ? sup.map(esc).join(" ") : '<span class="muted">none recorded</span>'}</td>
         <td>${f.review_state === "pending" ? '<span class="pill amber">Pending</span>' : '<span class="pill teal">Reviewed</span>'}<br>${flagPill(f.status)}</td><td>${modeTag(f.data_mode)}</td>
-        <td><a class="btn" href="#/review/${encodeURIComponent(f.flag_id)}">Open</a></td></tr>`; }).join("") || `<tr><td colspan="8" class="muted small">${empty}</td></tr>`}
+        <td><a class="btn" href="#/review/${encodeURIComponent(f.flag_id)}">Open</a></td></tr>`; }).join("") || `<tr><td colspan="9" class="muted small">${empty}</td></tr>`}
     </tbody></table></div>`;
 }
 

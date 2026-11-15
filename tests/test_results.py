@@ -76,7 +76,7 @@ def test_aggregate_experiment_matched_operating_point_auc_and_paired_differences
     assert h["projection_model"] == "P1" and h["level"].startswith("session") and h["operating_point"] == "matched"
     for k in ("false_alert_raw", "false_alert_projection", "change_sensitivity_raw", "change_sensitivity_projection"):
         assert 0 <= h[k]["rate"] <= 1 and h[k]["ci"][0] <= h[k]["rate"] <= h[k]["ci"][1] and h[k]["n"] == 4 * 6
-    assert "10 dB" in h["noise_condition"] and h["sentence"].startswith("At a matched clean-speech alert rate")
+    assert "10 dB" in h["noise_condition"] and "matched clean-speech alert rate" in h["sentence"]
     assert h["change_condition"].startswith("SYNTHETIC change: 20% slower")              # L3 present -> delivery change
     S = out["results"]["session"]["matched"]
     assert set(S["B0"]) >= {"clean", "noise_mix", "pause_change", "noise_0dB", "noise_20dB", "delivery_change",
