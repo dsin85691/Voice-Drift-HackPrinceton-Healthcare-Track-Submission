@@ -325,24 +325,3 @@ config.yaml    every threshold, model id and timeout
    writes `artifacts/vN/` (projector.pt, pca.npz, pca_raw.npz, drift_config.json, metrics.json). Keep it out of this repo.
 4. Copy the bundle to `artifacts/` on the laptop (or `make artifacts ARTIFACT_URL=...`); the server picks the newest `vN`.
    Pin `models.wavlm_revision` and `models.dam_revision` in `config.yaml` to commit hashes.
-
-## Deviations from the spec (and why)
-
-- **Frontend is dependency-free ES modules + inline SVG, not React/Vite/Tailwind/Recharts.** The build machine had
-  no Node. Behavior, screens and routes follow section 9; porting to React later doesn't touch the API.
-- `checkin` table has an extra `session_vec_raw` column (and `extra` JSON) to support `/demo/compare` after the audio is deleted.
-- Added `GET /api/patients`, `GET /api/prompt`, `DELETE /api/patients/{pid}`, and a `?role=patient` view that strips
-  every score, transcript and evidence field (the spec's "patient never sees a number").
-- `research/stats.py` replaces scikit-learn's LogisticRegression/AUC (the dev machine's app-control policy blocked sklearn).
-- Default `tau` / `sigma_pop` in `config.yaml` are for the fallback features (tau = simulated 90th percentile of the
-  null); real values come from `drift_config.json`.
-
-## Not done / needs the team
-
-- **Nothing here has been run on real Androids data or a GPU.** The research code is tested on planted synthetic
-  features only (CV, leakage assertions, bootstrap, probe, E3, export -> server load). No E1-E3 numbers exist yet.
-- Seeded `stable`/`drift` scenarios are **synthetic** (labeled simulated); replace with real venue recordings (spec 9.2).
-- Kintsugi DAM wrapper is a stub until its API/thresholds are verified (spec 13). Quality-gate thresholds need tuning
-  on venue recordings. Golden-run clips (3 consented recordings) and the train/serve parity test
-  (`tests/test_parity.py`, skips without WavLM + artifacts) still need to be run on the demo laptop.
-- Consent forms, LLM data-retention terms, and the 988/clinician copy should be reviewed by a human before live use.
