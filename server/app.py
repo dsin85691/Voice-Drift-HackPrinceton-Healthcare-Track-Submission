@@ -727,6 +727,15 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     # ------------------------------------------------------------------ frontend
     web = ROOT / "web"
     if web.exists():
+        @app.middleware("http")
+        async def no_stale_frontend(request, call_next):
+            # the frontend has no build step or versioned filenames: without this, browsers keep running an old
+            # app.js after an update (the page then disagrees with the server). Revalidate on every load.
+            resp = await call_next(request)
+            if request.url.path == "/" or request.url.path.startswith("/static/"):
+                resp.headers["Cache-Control"] = "no-cache"
+            return resp
+
         app.mount("/static", StaticFiles(directory=web), name="static")
 
         @app.get("/")

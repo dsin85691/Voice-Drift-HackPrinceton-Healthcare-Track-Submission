@@ -577,7 +577,10 @@ async function viewCheckin() {
       const r = await fetch(`/api/patients/${encodeURIComponent(S.pid)}/checkins`, { method: "POST", body: fd });
       if (r.status === 409 || r.status === 404) {
         const j = await r.json().catch(() => ({}));
-        renderOutcome({ outcome: "failed", message: `This repeat couldn't be recorded: ${j.detail || r.status}.` });
+        const synthetic = String(j.detail || "").includes("synthetic demo profile");
+        renderOutcome({ outcome: "failed", switchLive: synthetic,
+          message: synthetic ? "This is a synthetic demo profile, so a real recording can't be compared with it. Switch to the live profile to record."
+            : `${verify ? "This repeat" : "This recording"} couldn't be saved: ${j.detail || r.status}.` });
         return;
       }
       if (!r.ok) throw new Error(r.status);
@@ -612,10 +615,15 @@ function renderOutcome(r) {
   }
   if (r.outcome === "rejected" || r.outcome === "failed") {
     const again = r.verification_of ? `#/checkin?verify=${encodeURIComponent(r.verification_of)}` : "#/checkin";
-    $app.innerHTML = `<h1>${r.outcome === "failed" ? "This check-in couldn't be analysed" : "Recording quality was insufficient. Please try again."}</h1>
-      <div class="callout caution" role="alert"><h3>${r.outcome === "failed" ? "Something went wrong" : "We couldn't use this recording"}</h3><p>${esc(r.message)}</p>
+    $app.innerHTML = `<h1>${r.switchLive ? "This profile can't take recordings" : r.outcome === "failed" ? "This check-in couldn't be analysed" : "Recording quality was insufficient. Please try again."}</h1>
+      <div class="callout caution" role="alert"><h3>${r.switchLive ? "Synthetic demo profile" : r.outcome === "failed" ? "Something went wrong" : "We couldn't use this recording"}</h3><p>${esc(r.message)}</p>
         ${r.quality && (r.quality.reason_codes || []).length ? `<p class="tiny muted" style="margin:0">Reason: ${r.quality.reason_codes.map(esc).join(", ")}. This recording was not used for your baseline or any comparison.</p>` : ""}</div>
-      <p style="margin-top:16px"><a class="btn primary big" href="${again}" onclick="setTimeout(()=>dispatchEvent(new HashChangeEvent('hashchange')))">${icon("mic", 22)}Record again</a></p>`;
+      <p style="margin-top:16px"><button class="primary big" id="again">${icon("mic", 22)}${r.switchLive ? "Switch to Demo speaker (live) and record" : "Record again"}</button></p>`;
+    // a real button: works even when the address is already #/checkin (a same-hash link does nothing)
+    document.getElementById("again").onclick = () => {
+      if (r.switchLive) setPid("p_demo");
+      if (location.hash === again) route(); else location.hash = again;
+    };
     return;
   }
   const prog = r.baseline_progress;

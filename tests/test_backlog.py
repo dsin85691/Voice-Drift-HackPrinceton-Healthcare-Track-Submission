@@ -80,6 +80,9 @@ def test_real_recordings_are_refused_on_synthetic_profiles(client, wav_bytes):
     r = client.post("/api/patients/p_drift/checkins", files={"audio": ("a.wav", wav_bytes(seconds=40), "audio/wav")},
                     data={"prompt_id": "standard_reading_v1"})
     assert r.status_code == 409 and "synthetic demo profile" in r.json()["detail"]
+    # the frontend must never run a stale script after an update
+    for path in ("/", "/static/app.js", "/static/styles.css"):
+        assert client.get(path).headers.get("cache-control") == "no-cache"
     assert list(client.tmp_path.iterdir()) == []                              # nothing written for the refused upload
 
 
