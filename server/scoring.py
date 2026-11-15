@@ -97,7 +97,10 @@ def apply_scoring(s: Session, ck: Checkin, *, vec: np.ndarray | None, vec_raw: n
             trows = [_timing_view(c.timing) for c in passes[:base_n]]
             tmu, tsg = D.fit_timing_baseline(trows, dict(cfg["timing_sigma_pop"]), int(cfg["shrink_n0"]))
             s.merge(Baseline(patient_id=ck.patient_id, n=base_n, mu=vec_to_blob(mu), sigma=vec_to_blob(sg),
-                             timing_mu=tmu, timing_sigma=tsg, frozen_at=utcnow()))
+                             timing_mu=tmu, timing_sigma=tsg,
+                             # the baseline is "set" when the recording that completed it was made (for seeded
+                             # history that is in the past, not the moment the seed was loaded)
+                             frozen_at=ck.created_at or utcnow()))
     elif incompatible is not None:
         ck.extra["comparison"] = incompatible              # withheld: no unqualified drift score
     elif verdict in ("PASS", "WARN") and vec is not None:

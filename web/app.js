@@ -45,6 +45,7 @@ const IC = {
   x: '<path d="M6 6l12 12M18 6 6 18"/>',
   shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
   // from the Voice Drift Healthcare UI kit
+  chart: '<path d="M3 3v18h18"/><path d="m6 16 4-5 4 3 6-8"/>',
   sound: '<path d="M2 10v4m4-8v12m4-15v18m4-13v8m4-12v16m4-10v4"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   arrow: '<path d="M4 12h15m-6-6 6 6-6 6"/>',
@@ -420,7 +421,7 @@ function b1Note(agg) {
 // One point per accepted check-in: session drift / session boundary. Never a window-level threshold.
 function sessionChart(cks, { height = 240 } = {}) {
   if (!cks.length) return '<p class="muted">No check-ins in this period.</p>';
-  const W = 760, H = height, L = 58, R = 12, T = 12, B = 46;
+  const W = 760, H = height, L = 58, R = 40, T = 22, B = 46;   // R/T leave room for the last date and "acted" labels
   const vals = cks.map(ratio).filter((v) => v != null);
   const ymax = Math.max(2, ...vals) * 1.1;
   const x = (i) => L + (cks.length === 1 ? 0.5 : i / (cks.length - 1)) * (W - L - R);
