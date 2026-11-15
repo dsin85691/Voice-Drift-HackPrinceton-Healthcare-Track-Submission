@@ -181,9 +181,21 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 raise HTTPException(404, "unknown check-in")
             ctx = {"tags": sorted(set(body.tags)), "note": body.note.strip()[:300],
                    "updated_at": store.utcnow().isoformat() + "Z"}
+            # The typed note is free text, so it gets the same safety screen as speech. A reading passage can't
+            # surface crisis language; this note can. Scores are never changed by it.
+            from .pipeline import safety as safety_mod
+            hit = safety_mod.lexicon_match(ctx["note"]) if ctx["note"] else None
+            out = {"checkin_id": cid, "context": ctx}
+            if hit:
+                ctx["safety"] = {"triggered": True, "source": "lexicon_note"}
+                exists = s.exec(select(store.Alert).where(store.Alert.checkin_id == cid,
+                                                          store.Alert.kind == "SAFETY")).first()
+                if exists is None:
+                    s.add(store.Alert(id=store.new_id("a"), patient_id=ck.patient_id, checkin_id=cid, kind="SAFETY"))
+                out["safety"] = {"triggered": True, "message": scoring.SAFETY_MESSAGE}
             ck.extra = {**(ck.extra or {}), "context": ctx}      # reassign: JSON column change tracking
             s.add(ck); s.commit()
-            return {"checkin_id": cid, "context": ctx}
+            return out
 
     def _strip(ev: dict, role: str) -> dict:
         if role != "patient":

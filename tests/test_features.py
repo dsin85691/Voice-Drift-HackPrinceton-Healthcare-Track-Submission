@@ -208,6 +208,21 @@ def test_context_saved_without_changing_scores(client, wav_bytes):
     assert client.patch("/api/checkins/nope/context", json={"tags": []}).status_code == 404
 
 
+def test_context_note_is_safety_screened(client, wav_bytes):
+    """A reading passage can't surface crisis language, but the typed note can: it gets the same screen."""
+    r = post(client, "p_note", wav_bytes(seconds=40))
+    ok = client.patch(f"/api/checkins/{r['checkin_id']}/context", json={"tags": ["TIRED"], "note": "slept badly"}).json()
+    assert "safety" not in ok
+    hit = client.patch(f"/api/checkins/{r['checkin_id']}/context",
+                       json={"tags": [], "note": "honestly some days I just want to die"}).json()
+    assert hit["safety"]["triggered"] and "988" in hit["safety"]["message"]
+    tl = client.get("/api/patients/p_note/timeline").json()
+    assert [a["kind"] for a in tl["alerts"]] == ["SAFETY"]                 # the care team sees it
+    client.patch(f"/api/checkins/{r['checkin_id']}/context", json={"tags": [], "note": "I want to die"})
+    assert len(client.get("/api/patients/p_note/timeline").json()["alerts"]) == 1   # no duplicate alert
+    assert client.get(f"/api/checkins/{r['checkin_id']}").json()["drift"] == r["drift"]   # scores unchanged
+
+
 # ------------------------------------------------------------------ F6 review resolution
 def test_request_repeat_close_with_reason_and_no_external_delivery(client):
     client.post("/api/demo/reset", json={"scenario": "drift"})

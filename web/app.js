@@ -762,8 +762,11 @@ function wireContext(cid) {
     const tags = [...document.querySelectorAll('input[name="ctx"]:checked')].map((x) => x.value);
     const msg = document.getElementById("ctxmsg");
     try {
-      await api(`/checkins/${encodeURIComponent(cid)}/context`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags, note: document.getElementById("ctxnote").value }) });
+      const j = await api(`/checkins/${encodeURIComponent(cid)}/context`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags, note: document.getElementById("ctxnote").value }) });
       msg.textContent = "Saved.";
+      if (j.safety && j.safety.triggered) {      // typed crisis language: same support message as the spoken path
+        b.closest("section").insertAdjacentHTML("afterend", `<div class="support" role="alert" style="margin-top:20px"><p class="big">You are not alone.</p><p>${esc(j.safety.message)}</p><p class="big"><a href="tel:988">Call or text 988</a></p></div>`);
+      }
     } catch (e) { msg.textContent = "Couldn't save (" + e.message + ")."; }
   };
 }
@@ -1290,19 +1293,41 @@ async function viewAbout() {
   const res = S.results || {};
   const team = res.team || [];
   $app.innerHTML = `<div class="eyebrow"><span class="line"></span>How it works</div><h1>About &amp; Privacy</h1>
+    <section class="card stack" style="margin-bottom:20px" aria-labelledby="why-h">
+      <h2 id="why-h">The problem</h2>
+      <p>People go weeks between appointments, and changes in how they are doing can go unseen until the next visit. Questionnaires are infrequent and depend on someone noticing and reporting the change themselves.
+        Voice is a low-effort signal that could be checked in between, but two things get in the way: a noisy kitchen or a new phone can change a recording as much as the speaker does, and population "detectors" trained to label a voice are a different question from whether this person has changed.</p>
+      <h2>What Voice Drift does</h2>
+      <p><strong>It tells a care team when someone's voice has changed from their own normal, persistently, and not because of the room, so a person can check in sooner.</strong></p>
+      <ol class="small">
+        <li><strong>Measure:</strong> how far today's reading is from the person's own first five good readings, in units of their own variability, after checking recording quality and suppressing room noise.</li>
+        <li><strong>Decide:</strong> whether the difference persists (2 of the last 3 usable check-ins, on separate days), rather than a single unusual day.</li>
+        <li><strong>Route:</strong> a persistent difference becomes a nonurgent item for a human to review. Nothing is diagnosed and no risk label is shown to the person.</li>
+      </ol>
+      <h2>What it is not</h2>
+      <p class="small">It does not decide whether anyone has depression or any other condition. A depression classifier was trained as an experiment and is deliberately not used: a population classifier answers a different question, and on this research corpus its accuracy may reflect recording differences rather than illness.
+        A change from someone's baseline has <strong>not yet been shown to track a change in their mental health</strong>; that needs a longitudinal study with clinician-rated outcomes.</p>
+      <h2>What the evidence shows so far</h2>
+      <ul class="small">
+        <li>Room noise is largely ignored: at about the same clean-speech alert rate, added noise triggered far fewer false alerts with the projection than with raw WavLM (see <a href="#/results">Results</a>).</li>
+        <li>Some speech changes register (inserted pauses), at the cost of lower sensitivity than raw WavLM.</li>
+        <li>Slowed speech does not register in the overall score; speaking rate is reported as a separate measurement.</li>
+      </ul>
+    </section>
     <div class="grid half">
       <section class="card stack"><h2>Who it's for</h2>
         <p class="small">People whose speech is worth following between clinic visits, under a clinician's supervision, and the researchers studying whether that is reliable.
           Voice Drift is a research prototype; it measures speech and recording conditions and does not diagnose anything.</p>
         <h2>How it works</h2><ol class="small">
-          <li>A one-minute daily voice check-in, recorded in the browser.</li>
+          <li>A short check-in: reading the same passage aloud (about 40 seconds), recorded in the browser.</li>
           <li>A quality check rejects recordings with too little speech, too much noise or distortion.</li>
-          <li>A frozen speech model (WavLM) turns the voice into numbers; a small trained projection aims to ignore the room and microphone while keeping how the person speaks.</li>
-          <li>Each check-in is compared with the person's own first five, using a boundary set from normal day-to-day variation.</li>
+          <li>A frozen speech model (WavLM) turns the voice into numbers; a small projection, trained without any diagnosis labels, aims to ignore the room and microphone while keeping how the person speaks.</li>
+          <li>Each check-in is compared with the person's own first five good ones, using a boundary set in advance from other people's normal day-to-day variation (about 1 in 10 ordinary days crosses it).</li>
         </ol></section>
       <section class="card stack"><h2>Limitations</h2><ul class="small">
-          <li>Evaluated on a small research corpus of Italian interview speech, with a synthetic speech change. See <a href="#/results">Results</a> for the numbers and their uncertainty.</li>
+          <li>Evaluated on a small research corpus of Italian interview speech, with synthetic speech changes. See <a href="#/results">Results</a> for the numbers and their uncertainty.</li>
           <li>Day-to-day variation in real homes is larger than in the evaluation data.</li>
+          <li>The overall score does not detect slowed speech; speaking rate is shown separately.</li>
           <li>A difference from baseline is not evidence of any health condition, and not a clinical alert.</li>
         </ul>
         <h2>What's next</h2><ul class="small">

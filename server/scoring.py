@@ -14,6 +14,8 @@ from .store import Alert, Baseline, Checkin, blob_to_vec, new_id, utcnow, vec_to
 
 TIMING_KEYS = {"speech_rate": "speech_rate_wpm", "pause_rate": "pause_rate_pm", "mean_pause": "mean_pause_s"}
 DISCLAIMER = "Screening and monitoring aid — not a diagnosis."
+SAFETY_MESSAGE = ("If you are thinking about harming yourself, you are not alone. "
+                  "Call or text 988 (Suicide & Crisis Lifeline), any time. Please also contact your clinician today.")
 
 
 def history(s: Session, pid: str, before: datetime | None = None) -> list[Checkin]:
@@ -266,10 +268,7 @@ def patient_view(r: dict) -> dict:
         out["verification"] = r.get("verification")
         out["context"] = r.get("context")
     if r["status"] == "SAFETY":
-        out["safety"] = {"triggered": True,
-                         "message": "If you are thinking about harming yourself, you are not alone. "
-                                    "Call or text 988 (Suicide & Crisis Lifeline), any time. "
-                                    "Please also contact your clinician today."}
+        out["safety"] = {"triggered": True, "message": SAFETY_MESSAGE}
     elif q.get("verdict") == "REJECT":
         out["message"] = out["quality"]["message"]
     elif r["status"] == "INCOMPATIBLE":

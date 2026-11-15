@@ -1,8 +1,49 @@
 # Voice Drift Monitor
 
-60-second voice check-in -> quality verdict, drift vs. the person's own baseline, reference risk, and PHQ-9
-evidence quoted from the transcript. **Screening and monitoring aid - not a diagnosis.**
-Implements `Voice Drift Monitor — Engineering Specification.md`.
+**Voice Drift tells a care team when someone's voice has changed from their own normal: persistently, and not
+because of the room.** It is an experimental monitoring aid, not a diagnostic system.
+
+## The problem
+
+People go weeks between appointments, and deterioration can go unseen until the next visit (the problem statement in
+`Voice Drift Monitor — Engineering Specification.md`, section 9.3). Questionnaires are infrequent and rely on
+someone noticing and reporting the change. Voice is a low-effort signal that could be checked in between, but:
+
+- a noisy kitchen or a new phone can change a recording as much as the speaker does, and
+- a population "detector" trained to label a voice answers a different question from whether *this* person has changed.
+
+## What it does
+
+1. **Measure:** a short reading of the same passage is compared with the person's own first five good readings, in
+   units of their own variability, after a recording-quality check and a projection trained to ignore room noise.
+2. **Decide:** a difference counts only when it persists (2 of the last 3 usable check-ins, on separate days).
+3. **Route:** a persistent difference becomes a nonurgent item in a clinician review queue. Nothing is diagnosed, and
+   the person never sees a risk label.
+
+## What it is not, and what the evidence shows
+
+- **Not a depression detector.** Androids (a depression corpus) was used because it has realistic interview speech;
+  the projection was trained without diagnosis labels. A depression classifier was trained as an experiment (T1) and
+  is deliberately not deployed: it answers a population question, and on this corpus its accuracy may reflect
+  recording differences between groups rather than illness.
+- **Not yet shown to track mental health.** A change from baseline is a change in speech and recording measurements.
+  Whether it lines up with clinical change needs a longitudinal study with clinician-rated outcomes. The original spec
+  already listed this as a claim we would not make.
+- **Evidence so far** (`results/aggregate.json`, 6 held-out speakers; see the Results page):
+  - room noise is largely ignored: at roughly matched clean-speech alert rates, false alerts under 10 dB noise fell
+    from 86% (raw WavLM) to 19% (projection);
+  - inserted pauses register, but the projection detects them less often than raw WavLM (a trade-off);
+  - 20% slower delivery does not register in the overall score (window averaging removes speaking rate), so speaking
+    rate is reported as a separate measurement.
+
+## How this narrowed from the original spec
+
+The engineering spec's check-in returned a quality verdict, **drift against the person's own baseline**, a
+**reference risk score** and **PHQ-9 evidence** quoted from the transcript. The build keeps the first two as the
+product. The risk score is not shown, PHQ-9 evidence is limited to free-speech check-ins in the research view, and the
+standard check-in is now a fixed reading passage, which is never mined for symptom language.
+
+Implements `Voice Drift Monitor — Engineering Specification.md`, with the changes recorded below.
 
 ## Run it
 
