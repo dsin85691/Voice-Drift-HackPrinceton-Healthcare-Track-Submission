@@ -740,7 +740,16 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
 
         @app.get("/")
         def index():
-            return FileResponse(web / "index.html")
+            # version the script and stylesheet URLs by their size+mtime, so an updated file is always a new URL
+            # (cache-proof even for browsers that ignore no-cache on module scripts)
+            import hashlib
+            from fastapi.responses import HTMLResponse
+            html = (web / "index.html").read_text(encoding="utf-8")
+            for name in ("app.js", "styles.css"):
+                st = (web / name).stat()
+                v = hashlib.sha1(f"{st.st_size}:{st.st_mtime_ns}".encode()).hexdigest()[:10]
+                html = html.replace(f"/static/{name}", f"/static/{name}?v={v}")
+            return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     return app
 

@@ -29,6 +29,8 @@ try { resultsMode = localStorage.getItem("vd_results_mode") || "auto"; } catch {
 const setResultsMode = (m) => { resultsMode = m; try { localStorage.setItem("vd_results_mode", m); } catch {} };
 const resultsVisible = () => resultsMode === "show" || (resultsMode === "auto" && !!(S.results && S.results.aggregate));
 const setPid = (p) => { S.pid = p; try { localStorage.setItem("vd_pid", p); } catch {} };
+// where real recordings go when the current profile is synthetic (the topbar always offers this profile)
+const LIVE_PID = "p_demo";
 
 // Lucide-style outline icons, drawn in-house (24x24, stroke = currentColor)
 const IC = {
@@ -191,6 +193,30 @@ async function route() {
   $app.focus({ preventScroll: true });
 }
 window.addEventListener("hashchange", route);
+
+// ---- server unavailable: never fail silently. Any network failure that escapes a handler shows one banner, which
+// checks /api/health every 3 s and, when the server answers, removes itself and re-renders the current page.
+const OFFLINE_TEXT = "Voice Drift isn't responding. Check that the server is running, then try again.";
+const isNetErr = (e) => e instanceof TypeError && /fetch|network|load failed/i.test(String(e.message || e));
+const offlineMsg = (e) => (isNetErr(e) ? OFFLINE_TEXT : `That didn't work (${e && e.message ? e.message : e}).`);
+let offlineTimer = null;
+function showOffline() {
+  if (document.getElementById("offline-banner")) return;
+  document.body.insertAdjacentHTML("afterbegin", `<div id="offline-banner" role="alert" style="position:sticky;top:0;z-index:50;background:#FFF4E8;border-bottom:2px solid var(--amber);color:var(--amber-ink);padding:10px 16px;font-weight:700;text-align:center">${OFFLINE_TEXT} <span style="font-weight:500">Reconnecting automatically…</span></div>`);
+  offlineTimer = setInterval(async () => {
+    try {
+      const r = await fetch("/api/health", { cache: "no-store" });
+      if (!r.ok) return;
+      clearInterval(offlineTimer); offlineTimer = null;
+      document.getElementById("offline-banner")?.remove();
+      S.health = null; route();
+    } catch { /* still down: keep waiting */ }
+  }, 3000);
+}
+window.addEventListener("unhandledrejection", (ev) => {
+  if (isNetErr(ev.reason)) { ev.preventDefault(); showOffline(); }
+});
+
 route();
 
 async function timeline(pid = S.pid, days = 365) {
@@ -304,6 +330,13 @@ async function viewHome() {
       <div><strong>Built around a personal baseline, not a population average.</strong><p>Voices differ from person to person, so each check-in is compared with the same person's earlier readings of the same passage, with recording quality checked first.</p></div>
       <a class="small" href="#/about">How it works &rarr;</a></section>`;
   wireSample(res);
+  if (synthetic) {   // synthetic profiles can't take recordings: every "check-in" button goes to the live profile instead
+    $app.querySelectorAll('a[href="#/checkin"]').forEach((a) => {
+      a.innerHTML = `${icon("mic", 17)}Record on the live profile`;
+      a.title = "This is a synthetic demo profile; recordings are made on the live profile";
+      a.onclick = () => setPid(LIVE_PID);
+    });
+  }
   const hs = document.getElementById("herosample");
   if (hs) hs.onclick = () => { const b = document.getElementById("samplebtn"); if (b) { b.scrollIntoView({ behavior: "smooth", block: "center" }); b.click(); } };
   wireChartPoints(cks, "homeptdetail");
@@ -451,7 +484,7 @@ async function viewCheckin() {
         To record, switch to the live profile. Its baseline is your own first five readings.</p>
       <p><button class="primary" id="tolive">${icon("mic")}Switch to Demo speaker (live) and record</button></p>
       <p class="small muted">To see ${esc(ptl.patient.display_name)}'s review, switch the view to Clinician at the top.</p></div>`;
-    document.getElementById("tolive").onclick = () => { setPid("p_demo"); route(); };
+    document.getElementById("tolive").onclick = () => { setPid(LIVE_PID); route(); };
     return;
   }
   const prompt = await api(`/prompt?prompt_id=${encodeURIComponent(promptId)}`);
@@ -510,7 +543,12 @@ async function viewCheckin() {
     if (ctx && ctx.state !== "closed") ctx.close().catch(() => {});
     ctx = null;
   };
-  cleanup = () => { stopped = true; finish(); if (mr && mr.state !== "inactive") mr.stop(); };
+  // safe any number of times, and a no-op if recording never started (navigation away from an idle recorder)
+  cleanup = () => {
+    stopped = true; finish();
+    const m = mr; mr = null;
+    if (m && m.state !== "inactive") m.stop();
+  };
 
   rec.onclick = async () => {
     if (!navigator.mediaDevices?.getUserMedia) { showMicProblem("unsupported"); return; }
@@ -537,7 +575,8 @@ async function viewCheckin() {
     tick();
     mr = new MediaRecorder(stream, MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? { mimeType: "audio/webm;codecs=opus" } : undefined);
     mr.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    mr.onstop = () => { finish(); if (!stopped) upload(new Blob(chunks, { type: mr.mimeType || "audio/webm" })); };
+    const mime = mr.mimeType || "audio/webm";        // captured now: cleanup() may null `mr` before onstop fires
+    mr.onstop = () => { finish(); if (!stopped) upload(new Blob(chunks, { type: mime })); };
     mr.start(250);
     t0 = performance.now();
     say("Recording. Speak naturally.");
@@ -548,7 +587,7 @@ async function viewCheckin() {
       arc.style.strokeDashoffset = 527.8 * (1 - el / MAX_S);
       stop.disabled = el < MIN_S;
       stop.textContent = el < MIN_S ? `Stop & submit (after 0:${String(Math.ceil(MIN_S - el)).padStart(2, "0")})` : "Stop & submit";
-      if (el >= MAX_S) mr.stop();
+      if (el >= MAX_S && mr && mr.state !== "inactive") mr.stop();   // stop() on an inactive recorder throws
     }, 200);
   };
   stop.onclick = () => mr && mr.state !== "inactive" && mr.stop();
@@ -621,7 +660,7 @@ function renderOutcome(r) {
       <p style="margin-top:16px"><button class="primary big" id="again">${icon("mic", 22)}${r.switchLive ? "Switch to Demo speaker (live) and record" : "Record again"}</button></p>`;
     // a real button: works even when the address is already #/checkin (a same-hash link does nothing)
     document.getElementById("again").onclick = () => {
-      if (r.switchLive) setPid("p_demo");
+      if (r.switchLive) setPid(LIVE_PID);
       if (location.hash === again) route(); else location.hash = again;
     };
     return;
@@ -1397,12 +1436,22 @@ async function viewAbout() {
     </div>`;
   document.getElementById("del").onclick = async () => {
     if (!confirm(`Delete all stored data for ${S.pid}? This can't be undone.`)) return;
-    await api(`/patients/${encodeURIComponent(S.pid)}`, { method: "DELETE" });
-    document.getElementById("delmsg").textContent = "Deleted.";
+    try {
+      await api(`/patients/${encodeURIComponent(S.pid)}`, { method: "DELETE" });
+      document.getElementById("delmsg").textContent = "Deleted.";
+    } catch (e) { document.getElementById("delmsg").textContent = offlineMsg(e); }
   };
   $app.querySelectorAll('input[name="rmode"]').forEach((r) => (r.onchange = () => { setResultsMode(r.value); route(); }));
   $app.querySelectorAll("[data-reset]").forEach((b) => (b.onclick = async () => {
-    b.disabled = true; await post("/demo/reset", { scenario: b.dataset.reset }); S.health = null; route();
+    b.disabled = true;
+    try {
+      await post("/demo/reset", { scenario: b.dataset.reset });
+      S.health = null; route();
+    } catch (e) {
+      b.disabled = false;
+      b.parentElement.querySelector(".resetmsg")?.remove();
+      b.insertAdjacentHTML("afterend", `<span class="resetmsg small" role="alert" style="margin-left:8px;color:var(--amber-ink)">${esc(offlineMsg(e))}</span>`);
+    }
   }));
 }
 

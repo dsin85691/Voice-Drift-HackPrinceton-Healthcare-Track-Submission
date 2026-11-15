@@ -52,6 +52,11 @@ pip install -r requirements.txt
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8000     # or: make run
 ```
 
+For a live demo, start it exactly like this, **without `--reload`**: with auto-reload, saving any file restarts the
+server mid-pitch. With the real models (WSL conda env, offline):
+`HF_HUB_OFFLINE=1 ~/miniconda3/bin/python -m uvicorn server.app:create_app --factory --host 127.0.0.1 --port 8000`.
+If the server does restart, the page shows "Voice Drift isn't responding" and recovers by itself when it is back.
+
 - Patient check-in: http://127.0.0.1:8000/  (mic works on localhost)
 - Clinician dashboard: http://127.0.0.1:8000/#/clinician
 - Judging demo (reset buttons + raw-vs-invariance panel): add `?demo=1`, then press **Reset: all**

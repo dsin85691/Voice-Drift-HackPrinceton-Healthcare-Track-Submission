@@ -83,6 +83,11 @@ def test_real_recordings_are_refused_on_synthetic_profiles(client, wav_bytes):
     # the frontend must never run a stale script after an update
     for path in ("/", "/static/app.js", "/static/styles.css"):
         assert client.get(path).headers.get("cache-control") == "no-cache"
+    html = client.get("/").text                                                 # versioned asset URLs
+    import re
+    assert re.search(r'/static/app\.js\?v=[0-9a-f]{10}"', html) and re.search(r'/static/styles\.css\?v=[0-9a-f]{10}"', html)
+    v = re.search(r'app\.js\?v=([0-9a-f]+)', html).group(1)
+    assert client.get(f"/static/app.js?v={v}").status_code == 200
     assert list(client.tmp_path.iterdir()) == []                              # nothing written for the refused upload
 
 
